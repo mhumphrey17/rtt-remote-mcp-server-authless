@@ -248,7 +248,7 @@ export class RealtimeTrainsMCP extends McpAgent {
 					const limit = Math.min(Math.max(max_results, 1), 20);
 					
 					// Filter for departures from current time onwards and sort by departure time
-					const upcomingDepartures = [];
+					let upcomingDepartures = [];
 					
 					for (const service of services) {
 						const locationDetail = service.locationDetail;
@@ -399,7 +399,7 @@ export class RealtimeTrainsMCP extends McpAgent {
 					const limit = Math.min(Math.max(max_results, 1), 20);
 					
 					// Filter for services that arrive at this station from current time onwards
-					const upcomingArrivals: Array<{ service: any; arrivalLocation: any; scheduledTime: string }> = [];
+					let upcomingArrivals: Array<{ service: any; arrivalLocation: any; scheduledTime: string }> = [];
 					
 					for (const service of services) {
 						const locationDetail = service.locationDetail;
