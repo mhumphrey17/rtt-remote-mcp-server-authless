@@ -232,30 +232,23 @@ export class RealtimeTrainsMCP extends McpAgent {
 			async ({ station_code, max_results = 10 }: { station_code: string; max_results?: number }) => {
 				try {
 					const date = this.validateAndFormatDate();
-					const endpoint = `/json/search/${station_code.toUpperCase()}/${date}`;
+					
+					// Get current time in HHMM format for filtering
+					const now = new Date();
+					const currentTimeHHMM = String(now.getHours()).padStart(2, '0') + String(now.getMinutes()).padStart(2, '0');
+					
+					// Add time filtering to show only current/upcoming departures
+					const endpoint = `/json/search/${station_code.toUpperCase()}/${date}?from=${currentTimeHHMM}`;
 					const data = await this.makeApiRequest(endpoint);
 					
 					const services = data.services || [];
-					if (services.length === 0) {
-						return {
-							content: [{ type: "text", text: `No departures found for ${station_code.toUpperCase()} on ${date}` }]
-						};
-					}
-					
 					const stationName = data.location?.name || station_code.toUpperCase();
 					const limit = Math.min(Math.max(max_results, 1), 20);
 					
-					const result = [
-						`🚂 LIVE DEPARTURES - ${stationName}`,
-						`${new Date().toLocaleTimeString()} | ${date}`,
-						'─'.repeat(60),
-						'Time    | Destination           | Plat | Status'
-					];
+					// Filter for departures from current time onwards and sort by departure time
+					const upcomingDepartures = [];
 					
-					for (let i = 0; i < Math.min(services.length, limit); i++) {
-						const service = services[i];
-						
-						// For Search API, use locationDetail instead of locations array
+					for (const service of services) {
 						const locationDetail = service.locationDetail;
 						if (!locationDetail) continue;
 						
@@ -265,6 +258,35 @@ export class RealtimeTrainsMCP extends McpAgent {
 						// Get scheduled departure time
 						const scheduledTime = locationDetail.gbttBookedDeparture;
 						if (!scheduledTime) continue;
+						
+						// Only include if departure time is current or future
+						const depTimeHHMM = scheduledTime.padStart(4, '0');
+						if (depTimeHHMM >= currentTimeHHMM) {
+							upcomingDepartures.push({ service, locationDetail, scheduledTime: depTimeHHMM });
+						}
+					}
+					
+					// Sort by departure time
+					upcomingDepartures.sort((a, b) => a.scheduledTime.localeCompare(b.scheduledTime));
+					
+					if (upcomingDepartures.length === 0) {
+						return {
+							content: [{ type: "text", text: `No upcoming departures found for ${station_code.toUpperCase()} from ${now.toLocaleTimeString()}` }]
+						};
+					}
+					
+					const result = [
+						`🚂 LIVE DEPARTURES - ${stationName}`,
+						`${now.toLocaleTimeString()} | ${date} | Showing from ${this.formatTime(currentTimeHHMM)}`,
+						'─'.repeat(60),
+						'Time    | Destination           | Plat | Status'
+					];
+					
+					for (let i = 0; i < Math.min(upcomingDepartures.length, limit); i++) {
+						const { service, locationDetail } = upcomingDepartures[i];
+						
+						// Get scheduled departure time
+						const scheduledTime = locationDetail.gbttBookedDeparture;
 						
 						// Get destination
 						const destinations = this.extractServiceDestinations(service);
@@ -342,55 +364,61 @@ export class RealtimeTrainsMCP extends McpAgent {
 			async ({ station_code, max_results = 10 }: { station_code: string; max_results?: number }) => {
 				try {
 					const date = this.validateAndFormatDate();
-					const endpoint = `/json/search/${station_code.toUpperCase()}/${date}`;
+					
+					// Get current time in HHMM format for filtering
+					const now = new Date();
+					const currentTimeHHMM = String(now.getHours()).padStart(2, '0') + String(now.getMinutes()).padStart(2, '0');
+					
+					// Add time filtering to show only current/upcoming arrivals
+					const endpoint = `/json/search/${station_code.toUpperCase()}/${date}?from=${currentTimeHHMM}`;
 					const data = await this.makeApiRequest(endpoint);
 					
 					const services = data.services || [];
-					if (services.length === 0) {
-						return {
-							content: [{ type: "text", text: `No arrivals found for ${station_code.toUpperCase()} on ${date}` }]
-						};
-					}
-					
 					const stationName = data.location?.name || station_code.toUpperCase();
 					const limit = Math.min(Math.max(max_results, 1), 20);
 					
-					// Filter for services that arrive at this station
-					const arrivingServices: Array<{ service: any; arrivalLocation: any }> = [];
+					// Filter for services that arrive at this station from current time onwards
+					const upcomingArrivals: Array<{ service: any; arrivalLocation: any; scheduledTime: string }> = [];
+					
 					for (const service of services) {
-						// For Search API, use locationDetail instead of locations array
 						const locationDetail = service.locationDetail;
 						if (!locationDetail) continue;
 						
 						// Check if this service stops at the requested station and has arrival time
 						if (locationDetail.crs?.toUpperCase() === station_code.toUpperCase() && 
 							locationDetail.gbttBookedArrival) {
-							arrivingServices.push({ service, arrivalLocation: locationDetail });
+							
+							const arrivalTimeHHMM = locationDetail.gbttBookedArrival.padStart(4, '0');
+							
+							// Only include if arrival time is current or future
+							if (arrivalTimeHHMM >= currentTimeHHMM) {
+								upcomingArrivals.push({ 
+									service, 
+									arrivalLocation: locationDetail, 
+									scheduledTime: arrivalTimeHHMM 
+								});
+							}
 						}
 					}
 					
-					if (arrivingServices.length === 0) {
+					// Sort by scheduled arrival time
+					upcomingArrivals.sort((a, b) => a.scheduledTime.localeCompare(b.scheduledTime));
+					
+					if (upcomingArrivals.length === 0) {
 						return {
-							content: [{ type: "text", text: `No arrivals found for ${station_code.toUpperCase()} on ${date}` }]
+							content: [{ type: "text", text: `No upcoming arrivals found for ${station_code.toUpperCase()} from ${now.toLocaleTimeString()}` }]
 						};
 					}
 					
-					// Sort by scheduled arrival time
-					arrivingServices.sort((a, b) => {
-						const timeA = a.arrivalLocation.gbttBookedArrival || '9999';
-						const timeB = b.arrivalLocation.gbttBookedArrival || '9999';
-						return timeA.localeCompare(timeB);
-					});
-					
 					const result = [
 						`🚊 LIVE ARRIVALS - ${stationName}`,
-						`${new Date().toLocaleTimeString()} | ${date}`,
+						`${now.toLocaleTimeString()} | ${date} | Showing from ${this.formatTime(currentTimeHHMM)}`,
 						'─'.repeat(60),
 						'Time    | From                  | Plat | Status'
 					];
 					
-					for (let i = 0; i < Math.min(arrivingServices.length, limit); i++) {
-						const { service, arrivalLocation } = arrivingServices[i];
+					for (let i = 0; i < Math.min(upcomingArrivals.length, limit); i++) {
+						const { service, arrivalLocation } = upcomingArrivals[i];
 						
 						// Get scheduled arrival time
 						const scheduledTime = arrivalLocation.gbttBookedArrival;
