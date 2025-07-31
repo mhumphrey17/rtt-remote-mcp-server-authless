@@ -10,8 +10,17 @@
 	"compatibility_flags": ["nodejs_compat"],
 	"migrations": [
 		{
-			"new_sqlite_classes": ["RealtimeTrainsMCP"],
+			"new_sqlite_classes": ["MyMCP"],
 			"tag": "v1"
+		},
+		{
+			"renamed_classes": [
+				{
+					"from": "MyMCP",
+					"to": "RealtimeTrainsMCP"
+				}
+			],
+			"tag": "v2"
 		}
 	],
 	"durable_objects": {
