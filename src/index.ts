@@ -80,16 +80,30 @@ export class RealtimeTrainsMCP extends McpAgent {
 	private extractServiceOrigins(service: any): string[] {
 		const origins: string[] = [];
 		
-		// Try service.origin array first
-		const serviceOrigins = service.origin || [];
-		for (const origin of serviceOrigins) {
-			const name = origin.description || origin.publicName || origin.tiploc;
-			if (name && name !== 'Unknown') {
-				origins.push(name);
+		// For Search API: Try service.locationDetail.origin first
+		const locationDetail = service.locationDetail;
+		if (locationDetail) {
+			const serviceOrigins = locationDetail.origin || [];
+			for (const origin of serviceOrigins) {
+				const name = origin.description || origin.publicName || origin.tiploc;
+				if (name && name !== 'Unknown') {
+					origins.push(name);
+				}
 			}
 		}
 		
-		// Fallback to locations array
+		// Fallback for Service API: Try service.origin array
+		if (origins.length === 0) {
+			const serviceOrigins = service.origin || [];
+			for (const origin of serviceOrigins) {
+				const name = origin.description || origin.publicName || origin.tiploc;
+				if (name && name !== 'Unknown') {
+					origins.push(name);
+				}
+			}
+		}
+		
+		// Final fallback to locations array (Service API)
 		if (origins.length === 0) {
 			const locations = service.locations || [];
 			const originLocation = locations.find((loc: any) => loc.displayAs === 'ORIGIN');
@@ -110,16 +124,30 @@ export class RealtimeTrainsMCP extends McpAgent {
 	private extractServiceDestinations(service: any): string[] {
 		const destinations: string[] = [];
 		
-		// Try service.destination array first
-		const serviceDestinations = service.destination || [];
-		for (const destination of serviceDestinations) {
-			const name = destination.description || destination.publicName || destination.tiploc;
-			if (name && name !== 'Unknown') {
-				destinations.push(name);
+		// For Search API: Try service.locationDetail.destination first
+		const locationDetail = service.locationDetail;
+		if (locationDetail) {
+			const serviceDestinations = locationDetail.destination || [];
+			for (const destination of serviceDestinations) {
+				const name = destination.description || destination.publicName || destination.tiploc;
+				if (name && name !== 'Unknown') {
+					destinations.push(name);
+				}
 			}
 		}
 		
-		// Fallback to locations array
+		// Fallback for Service API: Try service.destination array
+		if (destinations.length === 0) {
+			const serviceDestinations = service.destination || [];
+			for (const destination of serviceDestinations) {
+				const name = destination.description || destination.publicName || destination.tiploc;
+				if (name && name !== 'Unknown') {
+					destinations.push(name);
+				}
+			}
+		}
+		
+		// Final fallback to locations array (Service API)
 		if (destinations.length === 0) {
 			const locations = service.locations || [];
 			const destLocation = locations.find((loc: any) => loc.displayAs === 'DESTINATION');
@@ -226,18 +254,16 @@ export class RealtimeTrainsMCP extends McpAgent {
 					
 					for (let i = 0; i < Math.min(services.length, limit); i++) {
 						const service = services[i];
-						const locations = service.locations || [];
 						
-						// Find departure location at this station
-						const depLocation = locations.find((loc: any) => 
-							loc.crs?.toUpperCase() === station_code.toUpperCase() && 
-							['ORIGIN', 'CALL'].includes(loc.displayAs)
-						);
+						// For Search API, use locationDetail instead of locations array
+						const locationDetail = service.locationDetail;
+						if (!locationDetail) continue;
 						
-						if (!depLocation) continue;
+						// Check if this service stops at the requested station
+						if (locationDetail.crs?.toUpperCase() !== station_code.toUpperCase()) continue;
 						
 						// Get scheduled departure time
-						const scheduledTime = depLocation.gbttBookedDeparture;
+						const scheduledTime = locationDetail.gbttBookedDeparture;
 						if (!scheduledTime) continue;
 						
 						// Get destination
@@ -247,17 +273,17 @@ export class RealtimeTrainsMCP extends McpAgent {
 							destinations[0].padEnd(18);
 						
 						// Get platform info
-						const platformInfo = this.formatPlatformInfo(depLocation);
+						const platformInfo = this.formatPlatformInfo(locationDetail);
 						const platform = platformInfo ? platformInfo.replace('Platform ', '').substring(0, 4).padEnd(4) : '    ';
 						
 						// Get real-time status
 						let status = 'On time';
-						const realtimeDep = depLocation.realtimeDeparture;
+						const realtimeDep = locationDetail.realtimeDeparture;
 						
-						if (depLocation.cancelReasonShortText) {
+						if (locationDetail.cancelReasonShortText) {
 							status = 'CANCELLED';
 						} else if (realtimeDep) {
-							const isActual = depLocation.realtimeDepartureActual;
+							const isActual = locationDetail.realtimeDepartureActual;
 							if (isActual) {
 								status = 'Departed';
 							} else {
@@ -275,8 +301,8 @@ export class RealtimeTrainsMCP extends McpAgent {
 						}
 						
 						// Current position indicator
-						if (depLocation.serviceLocation) {
-							const position = this.interpretServiceLocation(depLocation.serviceLocation);
+						if (locationDetail.serviceLocation) {
+							const position = this.interpretServiceLocation(locationDetail.serviceLocation);
 							if (position.includes('Approaching') || position.includes('At Platform')) {
 								status = position;
 							}
@@ -332,14 +358,14 @@ export class RealtimeTrainsMCP extends McpAgent {
 					// Filter for services that arrive at this station
 					const arrivingServices: Array<{ service: any; arrivalLocation: any }> = [];
 					for (const service of services) {
-						const locations = service.locations || [];
-						const arrivalLocation = locations.find((loc: any) => 
-							loc.crs?.toUpperCase() === station_code.toUpperCase() && 
-							['DESTINATION', 'CALL'].includes(loc.displayAs) &&
-							loc.gbttBookedArrival // Must have scheduled arrival
-						);
-						if (arrivalLocation) {
-							arrivingServices.push({ service, arrivalLocation });
+						// For Search API, use locationDetail instead of locations array
+						const locationDetail = service.locationDetail;
+						if (!locationDetail) continue;
+						
+						// Check if this service stops at the requested station and has arrival time
+						if (locationDetail.crs?.toUpperCase() === station_code.toUpperCase() && 
+							locationDetail.gbttBookedArrival) {
+							arrivingServices.push({ service, arrivalLocation: locationDetail });
 						}
 					}
 					
