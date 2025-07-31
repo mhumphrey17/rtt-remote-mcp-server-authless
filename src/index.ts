@@ -191,13 +191,16 @@ export class RealtimeTrainsMCP extends McpAgent {
 
 	async init() {
 		// Tool 1: Live Departure Board - Clean departure board like station displays
-		this.server.tool(
+		this.server.registerTool(
 			"get_live_departure_board",
 			{
-				station_code: z.string().describe("3-letter CRS station code (e.g., BTH=Bath Spa, PAD=London Paddington, BRI=Bristol Temple Meads, MTP=Montpelier, RDG=Reading). Use this exact format."),
-				max_results: z.number().optional().describe("Maximum number of departures to show (default: 10, max: 20)")
+				title: "Live Departure Board",
+				description: "Get a live departure board for a station showing trains leaving in the next few hours, like a real station display board. Use this when users want to see 'what trains are leaving from [station]' or need departure information to catch a train. Returns a formatted departure board with scheduled and real-time departure times, destinations, platforms, delays, and current status (approaching, departed, delayed, on time). Shows most recent departures first. Service UIDs in results can be used with get_service_details, track_service_progress, or check_service_platform for more information about specific trains.",
+				inputSchema: {
+					station_code: z.string().describe("3-letter CRS station code (e.g., BTH=Bath Spa, PAD=London Paddington, BRI=Bristol Temple Meads, MTP=Montpelier, RDG=Reading). Use this exact format."),
+					max_results: z.number().optional().describe("Maximum number of departures to show (default: 10, max: 20)")
+				}
 			},
-			"Get a live departure board for a station showing trains leaving in the next few hours, like a real station display board. Use this when users want to see 'what trains are leaving from [station]' or need departure information to catch a train. Returns a formatted departure board with scheduled and real-time departure times, destinations, platforms, delays, and current status (approaching, departed, delayed, on time). Shows most recent departures first. Service UIDs in results can be used with get_service_details, track_service_progress, or check_service_platform for more information about specific trains.",
 			async ({ station_code, max_results = 10 }: { station_code: string; max_results?: number }) => {
 				try {
 					const date = this.validateAndFormatDate();
@@ -300,13 +303,16 @@ export class RealtimeTrainsMCP extends McpAgent {
 		);
 
 		// Tool 2: Live Arrivals Board - Better arrival filtering with origin prominence
-		this.server.tool(
+		this.server.registerTool(
 			"get_live_arrivals_board",
 			{
-				station_code: z.string().describe("3-letter CRS station code (e.g., BTH=Bath Spa, PAD=London Paddington, BRI=Bristol Temple Meads, MTP=Montpelier, RDG=Reading). Use this exact format."),
-				max_results: z.number().optional().describe("Maximum number of arrivals to show (default: 10, max: 20)")
+				title: "Live Arrivals Board",
+				description: "Get a live arrivals board for a station showing trains arriving in the next few hours. Use this when users want to see 'what trains are arriving at [station]' or need to meet someone arriving by train. Returns a formatted arrivals board with scheduled and real-time arrival times, origins (where trains are coming FROM), platforms, delays, and current status (approaching, arrived, delayed, on time). Emphasizes origin stations since this is for meeting passengers. Service UIDs in results can be used with get_service_details, track_service_progress, or check_service_platform for detailed information about specific trains.",
+				inputSchema: {
+					station_code: z.string().describe("3-letter CRS station code (e.g., BTH=Bath Spa, PAD=London Paddington, BRI=Bristol Temple Meads, MTP=Montpelier, RDG=Reading). Use this exact format."),
+					max_results: z.number().optional().describe("Maximum number of arrivals to show (default: 10, max: 20)")
+				}
 			},
-			"Get a live arrivals board for a station showing trains arriving in the next few hours. Use this when users want to see 'what trains are arriving at [station]' or need to meet someone arriving by train. Returns a formatted arrivals board with scheduled and real-time arrival times, origins (where trains are coming FROM), platforms, delays, and current status (approaching, arrived, delayed, on time). Emphasizes origin stations since this is for meeting passengers. Service UIDs in results can be used with get_service_details, track_service_progress, or check_service_platform for detailed information about specific trains.",
 			async ({ station_code, max_results = 10 }: { station_code: string; max_results?: number }) => {
 				try {
 					const date = this.validateAndFormatDate();
@@ -426,13 +432,16 @@ export class RealtimeTrainsMCP extends McpAgent {
 		);
 
 		// Tool 3: Enhanced Service Details - Organized service information with better timeline
-		this.server.tool(
+		this.server.registerTool(
 			"get_service_details",
 			{
-				service_uid: z.string().describe("6-character service identifier found in departure/arrival board results (e.g., W72419, C12345, S98765). Always exactly 6 characters."),
-				date: z.string().optional().describe("Date in YYYY/MM/DD format with forward slashes (e.g., 2025/01/31). Must match the date when the service UID was found. Defaults to today if omitted.")
+				title: "Service Details",
+				description: "Get comprehensive details about a specific train service including complete journey timeline, all station stops, scheduled vs actual times, platforms, delays, and real-time status. Use this when users want complete information about a specific train service, or when they have a service UID from departure/arrival boards and want full journey details. Returns detailed journey information organized into departure, journey stops, and arrival sections with scheduled→actual time comparisons, platform information, current position, and any disruptions. Essential for understanding a train's complete journey and current status.",
+				inputSchema: {
+					service_uid: z.string().describe("6-character service identifier found in departure/arrival board results (e.g., W72419, C12345, S98765). Always exactly 6 characters."),
+					date: z.string().optional().describe("Date in YYYY/MM/DD format with forward slashes (e.g., 2025/01/31). Must match the date when the service UID was found. Defaults to today if omitted.")
+				}
 			},
-			"Get comprehensive details about a specific train service including complete journey timeline, all station stops, scheduled vs actual times, platforms, delays, and real-time status. Use this when users want complete information about a specific train service, or when they have a service UID from departure/arrival boards and want full journey details. Returns detailed journey information organized into departure, journey stops, and arrival sections with scheduled→actual time comparisons, platform information, current position, and any disruptions. Essential for understanding a train's complete journey and current status.",
 			async ({ service_uid, date }: { service_uid: string; date?: string }) => {
 				try {
 					const validatedDate = this.validateAndFormatDate(date);
@@ -569,13 +578,16 @@ export class RealtimeTrainsMCP extends McpAgent {
 		);
 
 		// Tool 4: Track Service Progress - Real-time journey tracking and current position
-		this.server.tool(
+		this.server.registerTool(
 			"track_service_progress",
 			{
-				service_uid: z.string().describe("6-character service identifier found in departure/arrival board results (e.g., W72419, C12345, S98765). Must have real-time tracking activated."),
-				date: z.string().optional().describe("Date in YYYY/MM/DD format with forward slashes (e.g., 2025/01/31). Must match the date when the service UID was found. Defaults to today if omitted.")
+				title: "Track Service Progress",
+				description: "Track the real-time progress of a specific train service showing current location, journey completion percentage, completed stops, and upcoming schedule. Use this when users want to know 'where is train [service_uid] right now' or track a train's live journey progress. Returns current position with progress bar, list of completed/pending stops with status icons, next stops preview, and live update timestamp. Only works with services that have real-time tracking activated - will return an error for schedule-only services. Perfect for monitoring a specific train's journey in real-time.",
+				inputSchema: {
+					service_uid: z.string().describe("6-character service identifier found in departure/arrival board results (e.g., W72419, C12345, S98765). Must have real-time tracking activated."),
+					date: z.string().optional().describe("Date in YYYY/MM/DD format with forward slashes (e.g., 2025/01/31). Must match the date when the service UID was found. Defaults to today if omitted.")
+				}
 			},
-			"Track the real-time progress of a specific train service showing current location, journey completion percentage, completed stops, and upcoming schedule. Use this when users want to know 'where is train [service_uid] right now' or track a train's live journey progress. Returns current position with progress bar, list of completed/pending stops with status icons, next stops preview, and live update timestamp. Only works with services that have real-time tracking activated - will return an error for schedule-only services. Perfect for monitoring a specific train's journey in real-time.",
 			async ({ service_uid, date }: { service_uid: string; date?: string }) => {
 				try {
 					const validatedDate = this.validateAndFormatDate(date);
@@ -754,14 +766,17 @@ export class RealtimeTrainsMCP extends McpAgent {
 		);
 
 		// Tool 5: Check Service Platform - Platform-specific information and change alerts
-		this.server.tool(
+		this.server.registerTool(
 			"check_service_platform",
 			{
-				service_uid: z.string().describe("6-character service identifier found in departure/arrival board results (e.g., W72419, C12345, S98765). Always exactly 6 characters."),
-				date: z.string().optional().describe("Date in YYYY/MM/DD format with forward slashes (e.g., 2025/01/31). Must match the date when the service UID was found. Defaults to today if omitted."),
-				station_code: z.string().optional().describe("3-letter CRS station code to focus on specific station (e.g., BTH=Bath Spa, PAD=London Paddington). If omitted, shows platform information for all stations on the service route.")
+				title: "Check Service Platform",
+				description: "Check platform information for a specific train service, with optional focus on a particular station. Shows platform assignments, confirmation status, and any platform changes with clear alerts. Use this when users need platform information for a specific train ('what platform is train [service_uid] using?'), either across its whole journey or at a particular station. Returns platform numbers with confirmation status (confirmed/not confirmed/changed), timing context, and prominent alerts for any platform changes. Essential for passengers who need to know exactly which platform to use and whether there have been any last-minute changes.",
+				inputSchema: {
+					service_uid: z.string().describe("6-character service identifier found in departure/arrival board results (e.g., W72419, C12345, S98765). Always exactly 6 characters."),
+					date: z.string().optional().describe("Date in YYYY/MM/DD format with forward slashes (e.g., 2025/01/31). Must match the date when the service UID was found. Defaults to today if omitted."),
+					station_code: z.string().optional().describe("3-letter CRS station code to focus on specific station (e.g., BTH=Bath Spa, PAD=London Paddington). If omitted, shows platform information for all stations on the service route.")
+				}
 			},
-			"Check platform information for a specific train service, with optional focus on a particular station. Shows platform assignments, confirmation status, and any platform changes with clear alerts. Use this when users need platform information for a specific train ('what platform is train [service_uid] using?'), either across its whole journey or at a particular station. Returns platform numbers with confirmation status (confirmed/not confirmed/changed), timing context, and prominent alerts for any platform changes. Essential for passengers who need to know exactly which platform to use and whether there have been any last-minute changes.",
 			async ({ service_uid, date, station_code }: { service_uid: string; date?: string; station_code?: string }) => {
 				try {
 					const validatedDate = this.validateAndFormatDate(date);
