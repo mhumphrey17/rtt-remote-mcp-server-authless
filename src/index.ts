@@ -21,25 +21,44 @@ export class RealtimeTrainsMCP extends McpAgent {
 		const url = `${this.API_BASE_URL}${endpoint}`;
 		const credentials = btoa(`${this.API_USERNAME}:${this.API_PASSWORD}`);
 		
-		const response = await fetch(url, {
-			headers: {
-				'Authorization': `Basic ${credentials}`,
-				'Accept': 'application/json',
-				'User-Agent': 'RealtimeTrains-MCP/1.0'
-			}
-		});
+		try {
+			const response = await fetch(url, {
+				headers: {
+					'Authorization': `Basic ${credentials}`,
+					'Accept': 'application/json',
+					'User-Agent': 'RealtimeTrains-MCP/1.0'
+				}
+			});
 
-		if (!response.ok) {
-			if (response.status === 404) {
-				throw new Error(`Service or station not found: ${endpoint}`);
-			} else if (response.status === 401) {
-				throw new Error('Authentication failed - check API credentials');
+			if (!response.ok) {
+				if (response.status === 404) {
+					throw new Error(`Service or station not found: ${endpoint}`);
+				} else if (response.status === 401) {
+					throw new Error('Authentication failed - check API credentials');
+				} else if (response.status === 403) {
+					throw new Error('Access forbidden - check API permissions');
+				} else if (response.status >= 500) {
+					throw new Error(`Server error (${response.status}) - please try again later`);
+				} else {
+					throw new Error(`API request failed: ${response.status} ${response.statusText}`);
+				}
+			}
+
+			const data = await response.json();
+			
+			// Validate response structure
+			if (!data || typeof data !== 'object') {
+				throw new Error('Invalid response format from API');
+			}
+			
+			return data;
+		} catch (error) {
+			if (error instanceof Error) {
+				throw error;
 			} else {
-				throw new Error(`API request failed: ${response.status}`);
+				throw new Error(`Network error: Unable to connect to Realtime Trains API`);
 			}
 		}
-
-		return await response.json();
 	}
 
 	/**
@@ -63,7 +82,7 @@ export class RealtimeTrainsMCP extends McpAgent {
 				station_code: z.string().describe("3-letter CRS station code. GWR/London codes: BTH=Bath Spa, BRI=Bristol Temple Meads, MTP=Montpelier, CPM=Chippenham, SWI=Swindon, RDG=Reading, DID=Didcot Parkway, PAD=London Paddington, WAT=London Waterloo, VIC=London Victoria, EUS=London Euston. Use search_station_info tool to find other station codes."),
 				date: z.string().optional().describe("Date in YYYY/MM/DD format with forward slashes and leading zeros (e.g., 2025/01/31, 2025/02/05 not 2025/2/5). Must use forward slashes, not hyphens. Only current and future dates work reliably. Defaults to today if omitted.")
 			},
-			async ({ station_code, date }) => {
+			async ({ station_code, date }: { station_code: string; date?: string }) => {
 				try {
 					if (!date) {
 						const now = new Date();
@@ -99,24 +118,64 @@ export class RealtimeTrainsMCP extends McpAgent {
 						const serviceId = service.serviceUid || 'Unknown';
 						const operator = service.atocName || 'Unknown operator';
 						
-						// Format origin and destination
+						// Extract origin and destination information with better fallbacks
+						let originStr = 'Unknown Origin';
+						let destStr = 'Unknown Destination';
+						let scheduledDep = '';
+						let scheduledArr = '';
+						
+						// Try to get origin from service.origin array first
 						const origins = service.origin || [];
+						if (origins.length > 0) {
+							const originNames = origins.map((o: any) => o.description || o.publicName || o.tiploc || 'Unknown').filter((name: string) => name !== 'Unknown');
+							if (originNames.length > 0) {
+								originStr = originNames.join(' & ');
+								scheduledDep = origins[0]?.publicTime ? this.formatTime(origins[0].publicTime) : '';
+							}
+						}
+						
+						// Try to get destination from service.destination array
 						const destinations = service.destination || [];
+						if (destinations.length > 0) {
+							const destNames = destinations.map((d: any) => d.description || d.publicName || d.tiploc || 'Unknown').filter((name: string) => name !== 'Unknown');
+							if (destNames.length > 0) {
+								destStr = destNames.join(' & ');
+								scheduledArr = destinations[0]?.publicTime ? this.formatTime(destinations[0].publicTime) : '';
+							}
+						}
 						
-						const originNames = origins.map((o: any) => o.description || 'Unknown');
-						const destNames = destinations.map((d: any) => d.description || 'Unknown');
+						// Fallback: Extract from locations array if origin/destination are still unknown
+						const locations = service.locations || [];
+						if (originStr === 'Unknown Origin' || destStr === 'Unknown Destination') {
+							const originLocation = locations.find((loc: any) => loc.displayAs === 'ORIGIN');
+							const destLocation = locations.find((loc: any) => loc.displayAs === 'DESTINATION');
+							
+							if (originLocation && originStr === 'Unknown Origin') {
+								originStr = originLocation.description || originLocation.tiploc || 'Unknown Origin';
+								if (!scheduledDep && originLocation.gbttBookedDeparture) {
+									scheduledDep = this.formatTime(originLocation.gbttBookedDeparture);
+								}
+							}
+							
+							if (destLocation && destStr === 'Unknown Destination') {
+								destStr = destLocation.description || destLocation.tiploc || 'Unknown Destination';
+								if (!scheduledArr && destLocation.gbttBookedArrival) {
+									scheduledArr = this.formatTime(destLocation.gbttBookedArrival);
+								}
+							}
+						}
 						
-						const originStr = originNames.join(' & ');
-						const destStr = destNames.join(' & ');
-						
-						// Get scheduled times
-						const scheduledDep = origins[0]?.publicTime ? this.formatTime(origins[0].publicTime) : '';
-						const scheduledArr = destinations[0]?.publicTime ? this.formatTime(destinations[0].publicTime) : '';
-						
-						let summary = `${serviceId} (${operator}): ${originStr} (${scheduledDep}) → ${destStr} (${scheduledArr})`;
+						// Format the summary with times only if available
+						let summary = `${serviceId} (${operator}): ${originStr}`;
+						if (scheduledDep) {
+							summary += ` (${scheduledDep})`;
+						}
+						summary += ` → ${destStr}`;
+						if (scheduledArr) {
+							summary += ` (${scheduledArr})`;
+						}
 						
 						// Add platform information if available
-						const locations = service.locations || [];
 						const departureLocation = locations.find((loc: any) => loc.displayAs === 'ORIGIN');
 						if (departureLocation?.platform) {
 							summary += ` | Platform ${departureLocation.platform}`;
@@ -154,7 +213,7 @@ export class RealtimeTrainsMCP extends McpAgent {
 				station_code: z.string().describe("3-letter CRS station code. GWR/London codes: BTH=Bath Spa, BRI=Bristol Temple Meads, MTP=Montpelier, CPM=Chippenham, SWI=Swindon, RDG=Reading, DID=Didcot Parkway, PAD=London Paddington, WAT=London Waterloo, VIC=London Victoria, EUS=London Euston. Use search_station_info tool to find other station codes."),
 				date: z.string().optional().describe("Date in YYYY/MM/DD format with forward slashes and leading zeros (e.g., 2025/01/31, 2025/02/05 not 2025/2/5). Must use forward slashes, not hyphens. Only current and future dates work reliably. Defaults to today if omitted.")
 			},
-			async ({ station_code, date }) => {
+			async ({ station_code, date }: { station_code: string; date?: string }) => {
 				try {
 					if (!date) {
 						const now = new Date();
@@ -209,15 +268,42 @@ export class RealtimeTrainsMCP extends McpAgent {
 						const serviceId = service.serviceUid || 'Unknown';
 						const operator = service.atocName || 'Unknown operator';
 						
-						// Format origin and destination
+						// Extract origin and destination information with better fallbacks
+						let originStr = 'Unknown Origin';
+						let destStr = 'Unknown Destination';
+						
+						// Try to get origin from service.origin array first
 						const origins = service.origin || [];
+						if (origins.length > 0) {
+							const originNames = origins.map((o: any) => o.description || o.publicName || o.tiploc || 'Unknown').filter((name: string) => name !== 'Unknown');
+							if (originNames.length > 0) {
+								originStr = originNames.join(' & ');
+							}
+						}
+						
+						// Try to get destination from service.destination array
 						const destinations = service.destination || [];
+						if (destinations.length > 0) {
+							const destNames = destinations.map((d: any) => d.description || d.publicName || d.tiploc || 'Unknown').filter((name: string) => name !== 'Unknown');
+							if (destNames.length > 0) {
+								destStr = destNames.join(' & ');
+							}
+						}
 						
-						const originNames = origins.map((o: any) => o.description || 'Unknown');
-						const destNames = destinations.map((d: any) => d.description || 'Unknown');
-						
-						const originStr = originNames.join(' & ');
-						const destStr = destNames.join(' & ');
+						// Fallback: Extract from locations array if origin/destination are still unknown
+						const locations = service.locations || [];
+						if (originStr === 'Unknown Origin' || destStr === 'Unknown Destination') {
+							const originLocation = locations.find((loc: any) => loc.displayAs === 'ORIGIN');
+							const destLocation = locations.find((loc: any) => loc.displayAs === 'DESTINATION');
+							
+							if (originLocation && originStr === 'Unknown Origin') {
+								originStr = originLocation.description || originLocation.tiploc || 'Unknown Origin';
+							}
+							
+							if (destLocation && destStr === 'Unknown Destination') {
+								destStr = destLocation.description || destLocation.tiploc || 'Unknown Destination';
+							}
+						}
 						
 						let summary = `${serviceId} (${operator}): ${originStr} → ${destStr}`;
 						
@@ -256,7 +342,7 @@ export class RealtimeTrainsMCP extends McpAgent {
 				service_uid: z.string().describe("6-character service identifier (1 letter + 5 numbers, e.g., W72419, C12345, S98765). Found in results from search_departures and search_arrivals tools. Always exactly 6 characters, case insensitive but typically uppercase."),
 				date: z.string().optional().describe("Date in YYYY/MM/DD format with forward slashes and leading zeros (e.g., 2025/01/31, 2025/02/05 not 2025/2/5). Must use forward slashes, not hyphens. Should match the date when the service UID was found. Only current and future dates work reliably. Defaults to today if omitted.")
 			},
-			async ({ service_uid, date }) => {
+			async ({ service_uid, date }: { service_uid: string; date?: string }) => {
 				try {
 					if (!date) {
 						const now = new Date();
@@ -399,8 +485,9 @@ export class RealtimeTrainsMCP extends McpAgent {
 			{ 
 				query: z.string().describe("Station name, partial name, or code to search for. Can be full name (Bath Spa, Bristol Temple Meads, London Paddington), partial name (Bath, Bristol, London, Montpelier), or existing code to verify (BTH, BRI, PAD). Case insensitive. Returns matching station codes and full names. Use this tool first if you don't know a station's 3-letter CRS code.")
 			},
-			async ({ query }) => {
+			async ({ query }: { query: string }) => {
 				const commonStations: { [key: string]: string } = {
+					// London Stations
 					'PAD': 'London Paddington',
 					'WAT': 'London Waterloo', 
 					'VIC': 'London Victoria',
@@ -410,18 +497,133 @@ export class RealtimeTrainsMCP extends McpAgent {
 					'CHX': 'London Charing Cross',
 					'LBG': 'London Bridge',
 					'CLJ': 'Clapham Junction',
+					'STP': 'London St Pancras International',
+					'MOG': 'London Moorgate',
+					'FST': 'London Fenchurch Street',
+					'MYB': 'London Marylebone',
+					
+					// GWR Route - Bath/Bristol/London
+					'BTH': 'Bath Spa',
+					'BRI': 'Bristol Temple Meads',
+					'MTP': 'Montpelier',
+					'CPM': 'Chippenham',
+					'SWI': 'Swindon',
+					'RDG': 'Reading',
+					'DID': 'Didcot Parkway',
+					'NWP': 'Newport (South Wales)',
+					'CDF': 'Cardiff Central',
+					'SLA': 'Slough',
+					'TAU': 'Taunton',
+					'EXD': 'Exeter St Davids',
+					'PLY': 'Plymouth',
+					'TRU': 'Truro',
+					'PNZ': 'Penzance',
+					
+					// Major Cities
 					'BHM': 'Birmingham New Street',
 					'MAN': 'Manchester Piccadilly',
 					'LDS': 'Leeds',
+					'LIV': 'Liverpool Lime Street',
+					'NCL': 'Newcastle',
 					'EDB': 'Edinburgh Waverley',
 					'GLC': 'Glasgow Central',
 					'GLQ': 'Glasgow Queen Street',
-					'NCL': 'Newcastle',
-					'BRI': 'Bristol Temple Meads',
+					'SHF': 'Sheffield',
+					'NOT': 'Nottingham',
+					'LCR': 'Leicester',
+					'COV': 'Coventry',
+					'WAR': 'Warrington Central',
+					'PRS': 'Preston',
+					'BPW': 'Blackpool North',
+					
+					// South/Southeast
 					'BTN': 'Brighton',
-					'OXF': 'Oxford',
+					'HSG': 'Hastings',
+					'ASH': 'Ashford International',
+					'CTM': 'Chatham',
+					'DVP': 'Dover Priory',
+					'FKS': 'Folkestone Central',
+					'MAR': 'Margate',
+					'RAM': 'Ramsgate',
+					'CTC': 'Canterbury West',
+					'TON': 'Tonbridge',
+					'SEV': 'Sevenoaks',
+					'GFD': 'Guildford',
+					'WOK': 'Woking',
+					'SUR': 'Surbiton',
+					'WIM': 'Wimbledon',
+					'EPH': 'East Putney',
+					
+					// East/Northeast
 					'CBG': 'Cambridge',
-					'YRK': 'York'
+					'OXF': 'Oxford',
+					'YRK': 'York',
+					'DAR': 'Darlington',
+					'DUR': 'Durham',
+					'MDL': 'Middlesbrough',
+					'HUL': 'Hull',
+					'SCU': 'Scunthorpe',
+					'GNT': 'Grantham',
+					'PBO': 'Peterborough',
+					'NWI': 'Norwich',
+					'IPS': 'Ipswich',
+					'COL': 'Colchester',
+					'CHM': 'Chelmsford',
+					'SOU': 'Southend Central',
+					
+					// Wales
+					'SWA': 'Swansea',
+					'ABG': 'Abergavenny',
+					'CHR': 'Chepstow',
+					'CWL': 'Cwmbran',
+					'NPT': 'Neath',
+					'PYE': 'Port Talbot Parkway',
+					'BGN': 'Bridgend',
+					'LLE': 'Llanelli',
+					'CAM': 'Carmarthen',
+					'TEN': 'Tenby',
+					'PMB': 'Pembroke',
+					'HAV': 'Haverfordwest',
+					'ABH': 'Aberystwyth',
+					'PWL': 'Pwllheli',
+					'BAN': 'Bangor (Gwynedd)',
+					'HLY': 'Holyhead',
+					'WRX': 'Wrexham General',
+					
+					// Scotland
+					'ABD': 'Aberdeen',
+					'DUN': 'Dundee',
+					'STG': 'Stirling',
+					'PKS': 'Perth',
+					'INV': 'Inverness',
+					'AYR': 'Ayr',
+					'KMK': 'Kilmarnock',
+					'IRV': 'Irvine',
+					'PIS': 'Paisley Gilmour Street',
+					'FAL': 'Falkirk High',
+					'LIN': 'Linlithgow',
+					'LVG': 'Livingston North',
+					'MTH': 'Motherwell',
+					'HAM': 'Hamilton Central',
+					'EKL': 'East Kilbride',
+					
+					// Midlands/North
+					'WOL': 'Wolverhampton',
+					'STA': 'Stafford',
+					'STO': 'Stoke-on-Trent',
+					'MAC': 'Macclesfield',
+					'STK': 'Stockport',
+					'WIG': 'Wigan North Western',
+					'BOL': 'Bolton',
+					'BUR': 'Burnley Central',
+					'BLK': 'Blackburn',
+					'LAN': 'Lancaster',
+					'CAR': 'Carlisle',
+					'PEN': 'Penrith',
+					'OXN': 'Oxenholme Lake District',
+					'KEN': 'Kendal',
+					'WIN': 'Windermere',
+					'BAR': 'Barrow-in-Furness'
 				};
 				
 				const queryUpper = query.toUpperCase();
