@@ -74,124 +74,217 @@ export class RealtimeTrainsMCP extends McpAgent {
 		return timeStr;
 	}
 
+	/**
+	 * Extract service origins from service object
+	 */
+	private extractServiceOrigins(service: any): string[] {
+		const origins: string[] = [];
+		
+		// Try service.origin array first
+		const serviceOrigins = service.origin || [];
+		for (const origin of serviceOrigins) {
+			const name = origin.description || origin.publicName || origin.tiploc;
+			if (name && name !== 'Unknown') {
+				origins.push(name);
+			}
+		}
+		
+		// Fallback to locations array
+		if (origins.length === 0) {
+			const locations = service.locations || [];
+			const originLocation = locations.find((loc: any) => loc.displayAs === 'ORIGIN');
+			if (originLocation) {
+				const name = originLocation.description || originLocation.tiploc;
+				if (name) {
+					origins.push(name);
+				}
+			}
+		}
+		
+		return origins.length > 0 ? origins : ['Unknown Origin'];
+	}
+
+	/**
+	 * Extract service destinations from service object
+	 */
+	private extractServiceDestinations(service: any): string[] {
+		const destinations: string[] = [];
+		
+		// Try service.destination array first
+		const serviceDestinations = service.destination || [];
+		for (const destination of serviceDestinations) {
+			const name = destination.description || destination.publicName || destination.tiploc;
+			if (name && name !== 'Unknown') {
+				destinations.push(name);
+			}
+		}
+		
+		// Fallback to locations array
+		if (destinations.length === 0) {
+			const locations = service.locations || [];
+			const destLocation = locations.find((loc: any) => loc.displayAs === 'DESTINATION');
+			if (destLocation) {
+				const name = destLocation.description || destLocation.tiploc;
+				if (name) {
+					destinations.push(name);
+				}
+			}
+		}
+		
+		return destinations.length > 0 ? destinations : ['Unknown Destination'];
+	}
+
+	/**
+	 * Interpret service location code into human-readable status
+	 */
+	private interpretServiceLocation(locationCode: string): string {
+		const locationMap: { [key: string]: string } = {
+			'APPR_STAT': 'Approaching Station',
+			'APPR_PLAT': 'Arriving',
+			'AT_PLAT': 'At Platform',
+			'DEP_PREP': 'Preparing to depart',
+			'DEP_READY': 'Ready to depart'
+		};
+		
+		return locationMap[locationCode] || locationCode;
+	}
+
+	/**
+	 * Format platform information with confirmation status
+	 */
+	private formatPlatformInfo(location: any): string {
+		if (!location.platform) {
+			return '';
+		}
+		
+		const platform = location.platform;
+		const confirmed = location.platformConfirmed || false;
+		const changed = location.platformChanged || false;
+		
+		let platformInfo = `Platform ${platform}`;
+		
+		if (changed) {
+			platformInfo += ' (CHANGED)';
+		} else if (!confirmed) {
+			platformInfo += ' (Not confirmed)';
+		}
+		
+		return platformInfo;
+	}
+
+	/**
+	 * Validate and format date string to YYYY/MM/DD format
+	 */
+	private validateAndFormatDate(date?: string): string {
+		if (!date) {
+			const now = new Date();
+			return `${now.getFullYear()}/${String(now.getMonth() + 1).padStart(2, '0')}/${String(now.getDate()).padStart(2, '0')}`;
+		}
+		
+		// Validate date format
+		if (!/^\d{4}\/\d{2}\/\d{2}$/.test(date)) {
+			throw new Error('Date must be in YYYY/MM/DD format (e.g., 2025/01/31)');
+		}
+		
+		return date;
+	}
+
 	async init() {
-		// Search train departures from a station
+		// Tool 1: Live Departure Board - Clean departure board like station displays
 		this.server.tool(
-			"search_departures",
-			{ 
-				station_code: z.string().describe("3-letter CRS station code. GWR/London codes: BTH=Bath Spa, BRI=Bristol Temple Meads, MTP=Montpelier, CPM=Chippenham, SWI=Swindon, RDG=Reading, DID=Didcot Parkway, PAD=London Paddington, WAT=London Waterloo, VIC=London Victoria, EUS=London Euston. Use search_station_info tool to find other station codes."),
-				date: z.string().optional().describe("Date in YYYY/MM/DD format with forward slashes and leading zeros (e.g., 2025/01/31, 2025/02/05 not 2025/2/5). Must use forward slashes, not hyphens. Only current and future dates work reliably. Defaults to today if omitted.")
+			"get_live_departure_board",
+			{
+				station_code: z.string().describe("3-letter CRS station code (e.g., BTH=Bath Spa, PAD=London Paddington, BRI=Bristol Temple Meads, MTP=Montpelier, RDG=Reading). Use this exact format."),
+				max_results: z.number().optional().describe("Maximum number of departures to show (default: 10, max: 20)")
 			},
-			async ({ station_code, date }: { station_code: string; date?: string }) => {
+			"Get a live departure board for a station showing trains leaving in the next few hours, like a real station display board. Use this when users want to see 'what trains are leaving from [station]' or need departure information to catch a train. Returns a formatted departure board with scheduled and real-time departure times, destinations, platforms, delays, and current status (approaching, departed, delayed, on time). Shows most recent departures first. Service UIDs in results can be used with get_service_details, track_service_progress, or check_service_platform for more information about specific trains.",
+			async ({ station_code, max_results = 10 }: { station_code: string; max_results?: number }) => {
 				try {
-					if (!date) {
-						const now = new Date();
-						date = `${now.getFullYear()}/${String(now.getMonth() + 1).padStart(2, '0')}/${String(now.getDate()).padStart(2, '0')}`;
-					}
-					
-					// Validate date format
-					if (!/^\d{4}\/\d{2}\/\d{2}$/.test(date)) {
-						return {
-							content: [{ type: "text", text: 'Error: Date must be in YYYY/MM/DD format (e.g., 2025/01/15)' }]
-						};
-					}
-					
+					const date = this.validateAndFormatDate();
 					const endpoint = `/json/search/${station_code.toUpperCase()}/${date}`;
 					const data = await this.makeApiRequest(endpoint);
 					
 					const services = data.services || [];
 					if (services.length === 0) {
 						return {
-							content: [{ type: "text", text: `No services found for station ${station_code.toUpperCase()} on ${date}` }]
+							content: [{ type: "text", text: `No departures found for ${station_code.toUpperCase()} on ${date}` }]
 						};
 					}
 					
 					const stationName = data.location?.name || station_code.toUpperCase();
+					const limit = Math.min(Math.max(max_results, 1), 20);
 					
 					const result = [
-						`🚂 Departures from ${stationName} on ${date}:`,
-						'=' + '='.repeat(50)
+						`🚂 LIVE DEPARTURES - ${stationName}`,
+						`${new Date().toLocaleTimeString()} | ${date}`,
+						'─'.repeat(60),
+						'Time    | Destination           | Plat | Status'
 					];
 					
-					for (let i = 0; i < Math.min(services.length, 10); i++) {
+					for (let i = 0; i < Math.min(services.length, limit); i++) {
 						const service = services[i];
-						const serviceId = service.serviceUid || 'Unknown';
-						const operator = service.atocName || 'Unknown operator';
-						
-						// Extract origin and destination information with better fallbacks
-						let originStr = 'Unknown Origin';
-						let destStr = 'Unknown Destination';
-						let scheduledDep = '';
-						let scheduledArr = '';
-						
-						// Try to get origin from service.origin array first
-						const origins = service.origin || [];
-						if (origins.length > 0) {
-							const originNames = origins.map((o: any) => o.description || o.publicName || o.tiploc || 'Unknown').filter((name: string) => name !== 'Unknown');
-							if (originNames.length > 0) {
-								originStr = originNames.join(' & ');
-								scheduledDep = origins[0]?.publicTime ? this.formatTime(origins[0].publicTime) : '';
-							}
-						}
-						
-						// Try to get destination from service.destination array
-						const destinations = service.destination || [];
-						if (destinations.length > 0) {
-							const destNames = destinations.map((d: any) => d.description || d.publicName || d.tiploc || 'Unknown').filter((name: string) => name !== 'Unknown');
-							if (destNames.length > 0) {
-								destStr = destNames.join(' & ');
-								scheduledArr = destinations[0]?.publicTime ? this.formatTime(destinations[0].publicTime) : '';
-							}
-						}
-						
-						// Fallback: Extract from locations array if origin/destination are still unknown
 						const locations = service.locations || [];
-						if (originStr === 'Unknown Origin' || destStr === 'Unknown Destination') {
-							const originLocation = locations.find((loc: any) => loc.displayAs === 'ORIGIN');
-							const destLocation = locations.find((loc: any) => loc.displayAs === 'DESTINATION');
-							
-							if (originLocation && originStr === 'Unknown Origin') {
-								originStr = originLocation.description || originLocation.tiploc || 'Unknown Origin';
-								if (!scheduledDep && originLocation.gbttBookedDeparture) {
-									scheduledDep = this.formatTime(originLocation.gbttBookedDeparture);
+						
+						// Find departure location at this station
+						const depLocation = locations.find((loc: any) => 
+							loc.crs?.toUpperCase() === station_code.toUpperCase() && 
+							['ORIGIN', 'CALL'].includes(loc.displayAs)
+						);
+						
+						if (!depLocation) continue;
+						
+						// Get scheduled departure time
+						const scheduledTime = depLocation.gbttBookedDeparture;
+						if (!scheduledTime) continue;
+						
+						// Get destination
+						const destinations = this.extractServiceDestinations(service);
+						const destination = destinations[0].length > 18 ? 
+							destinations[0].substring(0, 15) + '...' : 
+							destinations[0].padEnd(18);
+						
+						// Get platform info
+						const platformInfo = this.formatPlatformInfo(depLocation);
+						const platform = platformInfo ? platformInfo.replace('Platform ', '').substring(0, 4).padEnd(4) : '    ';
+						
+						// Get real-time status
+						let status = 'On time';
+						const realtimeDep = depLocation.realtimeDeparture;
+						
+						if (depLocation.cancelReasonShortText) {
+							status = 'CANCELLED';
+						} else if (realtimeDep) {
+							const isActual = depLocation.realtimeDepartureActual;
+							if (isActual) {
+								status = 'Departed';
+							} else {
+								// Calculate delay
+								const scheduledMinutes = parseInt(scheduledTime.substring(0, 2)) * 60 + parseInt(scheduledTime.substring(2, 4));
+								const realtimeMinutes = parseInt(realtimeDep.substring(0, 2)) * 60 + parseInt(realtimeDep.substring(2, 4));
+								const delayMinutes = realtimeMinutes - scheduledMinutes;
+								
+								if (delayMinutes > 0) {
+									status = `${delayMinutes}m late`;
+								} else if (delayMinutes < 0) {
+									status = `${Math.abs(delayMinutes)}m early`;
 								}
 							}
-							
-							if (destLocation && destStr === 'Unknown Destination') {
-								destStr = destLocation.description || destLocation.tiploc || 'Unknown Destination';
-								if (!scheduledArr && destLocation.gbttBookedArrival) {
-									scheduledArr = this.formatTime(destLocation.gbttBookedArrival);
-								}
+						}
+						
+						// Current position indicator
+						if (depLocation.serviceLocation) {
+							const position = this.interpretServiceLocation(depLocation.serviceLocation);
+							if (position.includes('Approaching') || position.includes('At Platform')) {
+								status = position;
 							}
 						}
 						
-						// Format the summary with times only if available
-						let summary = `${serviceId} (${operator}): ${originStr}`;
-						if (scheduledDep) {
-							summary += ` (${scheduledDep})`;
-						}
-						summary += ` → ${destStr}`;
-						if (scheduledArr) {
-							summary += ` (${scheduledArr})`;
-						}
-						
-						// Add platform information if available
-						const departureLocation = locations.find((loc: any) => loc.displayAs === 'ORIGIN');
-						if (departureLocation?.platform) {
-							summary += ` | Platform ${departureLocation.platform}`;
-						}
-						
-						// Add real-time information
-						if (departureLocation) {
-							const realtimeDep = departureLocation.realtimeDeparture;
-							if (realtimeDep) {
-								const isActual = departureLocation.realtimeDepartureActual || false;
-								const status = isActual ? 'Actual' : 'Expected';
-								summary += ` | ${status}: ${this.formatTime(realtimeDep)}`;
-							}
-						}
-						
-						result.push(summary);
+						const timeStr = this.formatTime(scheduledTime);
+						result.push(`${timeStr.padEnd(8)}| ${destination} | ${platform} | ${status}`);
+					}
+					
+					if (result.length === 4) {
+						result.push('No departures found');
 					}
 					
 					return {
@@ -206,38 +299,29 @@ export class RealtimeTrainsMCP extends McpAgent {
 			}
 		);
 
-		// Search train arrivals at a station
+		// Tool 2: Live Arrivals Board - Better arrival filtering with origin prominence
 		this.server.tool(
-			"search_arrivals",
-			{ 
-				station_code: z.string().describe("3-letter CRS station code. GWR/London codes: BTH=Bath Spa, BRI=Bristol Temple Meads, MTP=Montpelier, CPM=Chippenham, SWI=Swindon, RDG=Reading, DID=Didcot Parkway, PAD=London Paddington, WAT=London Waterloo, VIC=London Victoria, EUS=London Euston. Use search_station_info tool to find other station codes."),
-				date: z.string().optional().describe("Date in YYYY/MM/DD format with forward slashes and leading zeros (e.g., 2025/01/31, 2025/02/05 not 2025/2/5). Must use forward slashes, not hyphens. Only current and future dates work reliably. Defaults to today if omitted.")
+			"get_live_arrivals_board",
+			{
+				station_code: z.string().describe("3-letter CRS station code (e.g., BTH=Bath Spa, PAD=London Paddington, BRI=Bristol Temple Meads, MTP=Montpelier, RDG=Reading). Use this exact format."),
+				max_results: z.number().optional().describe("Maximum number of arrivals to show (default: 10, max: 20)")
 			},
-			async ({ station_code, date }: { station_code: string; date?: string }) => {
+			"Get a live arrivals board for a station showing trains arriving in the next few hours. Use this when users want to see 'what trains are arriving at [station]' or need to meet someone arriving by train. Returns a formatted arrivals board with scheduled and real-time arrival times, origins (where trains are coming FROM), platforms, delays, and current status (approaching, arrived, delayed, on time). Emphasizes origin stations since this is for meeting passengers. Service UIDs in results can be used with get_service_details, track_service_progress, or check_service_platform for detailed information about specific trains.",
+			async ({ station_code, max_results = 10 }: { station_code: string; max_results?: number }) => {
 				try {
-					if (!date) {
-						const now = new Date();
-						date = `${now.getFullYear()}/${String(now.getMonth() + 1).padStart(2, '0')}/${String(now.getDate()).padStart(2, '0')}`;
-					}
-					
-					// Validate date format
-					if (!/^\d{4}\/\d{2}\/\d{2}$/.test(date)) {
-						return {
-							content: [{ type: "text", text: 'Error: Date must be in YYYY/MM/DD format (e.g., 2025/01/15)' }]
-						};
-					}
-					
+					const date = this.validateAndFormatDate();
 					const endpoint = `/json/search/${station_code.toUpperCase()}/${date}`;
 					const data = await this.makeApiRequest(endpoint);
 					
 					const services = data.services || [];
 					if (services.length === 0) {
 						return {
-							content: [{ type: "text", text: `No services found for station ${station_code.toUpperCase()} on ${date}` }]
+							content: [{ type: "text", text: `No arrivals found for ${station_code.toUpperCase()} on ${date}` }]
 						};
 					}
 					
 					const stationName = data.location?.name || station_code.toUpperCase();
+					const limit = Math.min(Math.max(max_results, 1), 20);
 					
 					// Filter for services that arrive at this station
 					const arrivingServices: Array<{ service: any; arrivalLocation: any }> = [];
@@ -245,7 +329,8 @@ export class RealtimeTrainsMCP extends McpAgent {
 						const locations = service.locations || [];
 						const arrivalLocation = locations.find((loc: any) => 
 							loc.crs?.toUpperCase() === station_code.toUpperCase() && 
-							['DESTINATION', 'CALL'].includes(loc.displayAs)
+							['DESTINATION', 'CALL'].includes(loc.displayAs) &&
+							loc.gbttBookedArrival // Must have scheduled arrival
 						);
 						if (arrivalLocation) {
 							arrivingServices.push({ service, arrivalLocation });
@@ -254,73 +339,78 @@ export class RealtimeTrainsMCP extends McpAgent {
 					
 					if (arrivingServices.length === 0) {
 						return {
-							content: [{ type: "text", text: `No arriving services found for station ${station_code.toUpperCase()} on ${date}` }]
+							content: [{ type: "text", text: `No arrivals found for ${station_code.toUpperCase()} on ${date}` }]
 						};
 					}
 					
+					// Sort by scheduled arrival time
+					arrivingServices.sort((a, b) => {
+						const timeA = a.arrivalLocation.gbttBookedArrival || '9999';
+						const timeB = b.arrivalLocation.gbttBookedArrival || '9999';
+						return timeA.localeCompare(timeB);
+					});
+					
 					const result = [
-						`🚂 Arrivals at ${stationName} on ${date}:`,
-						'='.repeat(50)
+						`🚊 LIVE ARRIVALS - ${stationName}`,
+						`${new Date().toLocaleTimeString()} | ${date}`,
+						'─'.repeat(60),
+						'Time    | From                  | Plat | Status'
 					];
 					
-					for (let i = 0; i < Math.min(arrivingServices.length, 10); i++) {
+					for (let i = 0; i < Math.min(arrivingServices.length, limit); i++) {
 						const { service, arrivalLocation } = arrivingServices[i];
-						const serviceId = service.serviceUid || 'Unknown';
-						const operator = service.atocName || 'Unknown operator';
 						
-						// Extract origin and destination information with better fallbacks
-						let originStr = 'Unknown Origin';
-						let destStr = 'Unknown Destination';
+						// Get scheduled arrival time
+						const scheduledTime = arrivalLocation.gbttBookedArrival;
 						
-						// Try to get origin from service.origin array first
-						const origins = service.origin || [];
-						if (origins.length > 0) {
-							const originNames = origins.map((o: any) => o.description || o.publicName || o.tiploc || 'Unknown').filter((name: string) => name !== 'Unknown');
-							if (originNames.length > 0) {
-								originStr = originNames.join(' & ');
-							}
-						}
+						// Get origin (prominence for arrivals)
+						const origins = this.extractServiceOrigins(service);
+						const origin = origins[0].length > 18 ? 
+							origins[0].substring(0, 15) + '...' : 
+							origins[0].padEnd(18);
 						
-						// Try to get destination from service.destination array
-						const destinations = service.destination || [];
-						if (destinations.length > 0) {
-							const destNames = destinations.map((d: any) => d.description || d.publicName || d.tiploc || 'Unknown').filter((name: string) => name !== 'Unknown');
-							if (destNames.length > 0) {
-								destStr = destNames.join(' & ');
-							}
-						}
+						// Get platform info
+						const platformInfo = this.formatPlatformInfo(arrivalLocation);
+						const platform = platformInfo ? platformInfo.replace('Platform ', '').substring(0, 4).padEnd(4) : '    ';
 						
-						// Fallback: Extract from locations array if origin/destination are still unknown
-						const locations = service.locations || [];
-						if (originStr === 'Unknown Origin' || destStr === 'Unknown Destination') {
-							const originLocation = locations.find((loc: any) => loc.displayAs === 'ORIGIN');
-							const destLocation = locations.find((loc: any) => loc.displayAs === 'DESTINATION');
-							
-							if (originLocation && originStr === 'Unknown Origin') {
-								originStr = originLocation.description || originLocation.tiploc || 'Unknown Origin';
-							}
-							
-							if (destLocation && destStr === 'Unknown Destination') {
-								destStr = destLocation.description || destLocation.tiploc || 'Unknown Destination';
-							}
-						}
-						
-						let summary = `${serviceId} (${operator}): ${originStr} → ${destStr}`;
-						
-						// Add platform information if available
-						if (arrivalLocation.platform) {
-							summary += ` | Platform ${arrivalLocation.platform}`;
-						}
-						
-						// Add real-time arrival information
+						// Get real-time status
+						let status = 'On time';
 						const realtimeArr = arrivalLocation.realtimeArrival;
-						if (realtimeArr) {
-							const isActual = arrivalLocation.realtimeArrivalActual || false;
-							const status = isActual ? 'Actual' : 'Expected';
-							summary += ` | ${status}: ${this.formatTime(realtimeArr)}`;
+						
+						if (arrivalLocation.cancelReasonShortText) {
+							status = 'CANCELLED';
+						} else if (realtimeArr) {
+							const isActual = arrivalLocation.realtimeArrivalActual;
+							if (isActual) {
+								status = 'Arrived';
+							} else {
+								// Calculate delay
+								const scheduledMinutes = parseInt(scheduledTime.substring(0, 2)) * 60 + parseInt(scheduledTime.substring(2, 4));
+								const realtimeMinutes = parseInt(realtimeArr.substring(0, 2)) * 60 + parseInt(realtimeArr.substring(2, 4));
+								const delayMinutes = realtimeMinutes - scheduledMinutes;
+								
+								if (delayMinutes > 0) {
+									status = `${delayMinutes}m late`;
+								} else if (delayMinutes < 0) {
+									status = `${Math.abs(delayMinutes)}m early`;
+								}
+							}
 						}
 						
-						result.push(summary);
+						// Current position indicator for approaching trains
+						if (arrivalLocation.serviceLocation) {
+							const position = this.interpretServiceLocation(arrivalLocation.serviceLocation);
+							if (position.includes('Approaching') || position.includes('Arriving')) {
+								status = position;
+							}
+						}
+						
+						const timeStr = this.formatTime(scheduledTime);
+						result.push(`${timeStr.padEnd(8)}| ${origin} | ${platform} | ${status}`);
+					}
+					
+					if (result.length === 4) {
+						result.push('No arrivals found');
 					}
 					
 					return {
@@ -335,25 +425,21 @@ export class RealtimeTrainsMCP extends McpAgent {
 			}
 		);
 
-		// Get detailed service information
+		// Tool 3: Enhanced Service Details - Organized service information with better timeline
 		this.server.tool(
 			"get_service_details",
-			{ 
-				service_uid: z.string().describe("6-character service identifier (1 letter + 5 numbers, e.g., W72419, C12345, S98765). Found in results from search_departures and search_arrivals tools. Always exactly 6 characters, case insensitive but typically uppercase."),
-				date: z.string().optional().describe("Date in YYYY/MM/DD format with forward slashes and leading zeros (e.g., 2025/01/31, 2025/02/05 not 2025/2/5). Must use forward slashes, not hyphens. Should match the date when the service UID was found. Only current and future dates work reliably. Defaults to today if omitted.")
+			{
+				service_uid: z.string().describe("6-character service identifier found in departure/arrival board results (e.g., W72419, C12345, S98765). Always exactly 6 characters."),
+				date: z.string().optional().describe("Date in YYYY/MM/DD format with forward slashes (e.g., 2025/01/31). Must match the date when the service UID was found. Defaults to today if omitted.")
 			},
+			"Get comprehensive details about a specific train service including complete journey timeline, all station stops, scheduled vs actual times, platforms, delays, and real-time status. Use this when users want complete information about a specific train service, or when they have a service UID from departure/arrival boards and want full journey details. Returns detailed journey information organized into departure, journey stops, and arrival sections with scheduled→actual time comparisons, platform information, current position, and any disruptions. Essential for understanding a train's complete journey and current status.",
 			async ({ service_uid, date }: { service_uid: string; date?: string }) => {
 				try {
-					if (!date) {
-						const now = new Date();
-						date = `${now.getFullYear()}/${String(now.getMonth() + 1).padStart(2, '0')}/${String(now.getDate()).padStart(2, '0')}`;
-					}
-					
-					// Validate date format and convert to URL format
-					const dateMatch = date.match(/^(\d{4})\/(\d{2})\/(\d{2})$/);
+					const validatedDate = this.validateAndFormatDate(date);
+					const dateMatch = validatedDate.match(/^(\d{4})\/(\d{2})\/(\d{2})$/);
 					if (!dateMatch) {
 						return {
-							content: [{ type: "text", text: 'Error: Date must be in YYYY/MM/DD format (e.g., 2025/01/15)' }]
+							content: [{ type: "text", text: 'Error: Invalid date format' }]
 						};
 					}
 					
@@ -361,114 +447,117 @@ export class RealtimeTrainsMCP extends McpAgent {
 					const endpoint = `/json/service/${service_uid.toUpperCase()}/${year}/${month}/${day}`;
 					const data = await this.makeApiRequest(endpoint);
 					
-					// Extract service information
-					const serviceInfo = [
-						`🚂 Service Details: ${data.serviceUid || 'Unknown'}`,
-						'='.repeat(50),
-						`Service Type: ${data.serviceType || 'Unknown'}`,
-						`Operator: ${data.atocName || 'Unknown'}`,
-						`Train Identity: ${data.trainIdentity || 'Unknown'}`,
-						`Passenger Service: ${data.isPassenger ? 'Yes' : 'No'}`,
-						`Run Date: ${data.runDate || 'Unknown'}`
+					// Service Header
+					const origins = this.extractServiceOrigins(data);
+					const destinations = this.extractServiceDestinations(data);
+					
+					const result = [
+						`🚂 SERVICE ${data.serviceUid || 'Unknown'} - ${data.runDate || validatedDate}`,
+						`${origins[0]} → ${destinations[0]}`,
+						'═'.repeat(60),
+						`🏢 Operator: ${data.atocName || 'Unknown'}`,
+						`🚊 Train ID: ${data.trainIdentity || 'Unknown'}`,
+						`👥 Passenger Service: ${data.isPassenger ? 'Yes' : 'No'}`,
+						`📡 Real-time: ${data.realtimeActivated ? 'Active' : 'Not available'}`
 					];
 					
-					if (data.realtimeActivated) {
-						serviceInfo.push('Real-time Tracking: Active');
-						if (data.runningIdentity) {
-							serviceInfo.push(`Running Identity: ${data.runningIdentity}`);
-						}
-					} else {
-						serviceInfo.push('Real-time Tracking: Not available');
+					if (data.runningIdentity && data.runningIdentity !== data.trainIdentity) {
+						result.push(`🔄 Running as: ${data.runningIdentity}`);
 					}
 					
-					serviceInfo.push('', '🚉 Station Stops:', '-'.repeat(30));
+					result.push('', '🛤️  JOURNEY TIMELINE', '─'.repeat(60));
 					
-					// Process locations
+					// Enhanced timeline with better organization
 					const locations = data.locations || [];
-					for (const location of locations) {
-						const stationLine = [];
-						
-						// Station name
-						const stationName = location.description || 'Unknown Station';
+					let currentSection = '';
+					
+					for (let i = 0; i < locations.length; i++) {
+						const location = locations[i];
 						const displayAs = location.displayAs || 'CALL';
 						
-						if (displayAs === 'ORIGIN') {
-							stationLine.push(`🚀 ${stationName}`);
-						} else if (displayAs === 'DESTINATION') {
-							stationLine.push(`🏁 ${stationName}`);
-						} else {
-							stationLine.push(`🚉 ${stationName}`);
+						// Section headers for better organization
+						if (displayAs === 'ORIGIN' && currentSection !== 'ORIGIN') {
+							result.push('🚀 DEPARTURE');
+							currentSection = 'ORIGIN';
+						} else if (displayAs === 'CALL' && currentSection !== 'JOURNEY') {
+							result.push('', '🚉 JOURNEY STOPS');
+							currentSection = 'JOURNEY';
+						} else if (displayAs === 'DESTINATION' && currentSection !== 'DESTINATION') {
+							result.push('', '🏁 ARRIVAL');
+							currentSection = 'DESTINATION';
 						}
 						
-						// Times
+						// Station line
+						const stationName = location.description || 'Unknown Station';
+						const stationLine = [`  ${stationName}`];
+						
+						// Times with clear scheduled vs actual
 						const times = [];
+						
 						if (location.gbttBookedArrival) {
-							const arrTime = this.formatTime(location.gbttBookedArrival);
+							const scheduledArr = this.formatTime(location.gbttBookedArrival);
 							const realArr = location.realtimeArrival;
+							
 							if (realArr) {
 								const realArrFormatted = this.formatTime(realArr);
-								const isActual = location.realtimeArrivalActual || false;
-								const status = isActual ? 'Actual' : 'Expected';
-								times.push(`Arr: ${arrTime} (${status}: ${realArrFormatted})`);
+								const isActual = location.realtimeArrivalActual;
+								const status = isActual ? 'Arrived' : 'Expected';
+								times.push(`Arr: ${scheduledArr} → ${realArrFormatted} (${status})`);
 							} else {
-								times.push(`Arr: ${arrTime}`);
+								times.push(`Arr: ${scheduledArr}`);
 							}
 						}
 						
 						if (location.gbttBookedDeparture) {
-							const depTime = this.formatTime(location.gbttBookedDeparture);
+							const scheduledDep = this.formatTime(location.gbttBookedDeparture);
 							const realDep = location.realtimeDeparture;
+							
 							if (realDep) {
 								const realDepFormatted = this.formatTime(realDep);
-								const isActual = location.realtimeDepartureActual || false;
-								const status = isActual ? 'Actual' : 'Expected';
-								times.push(`Dep: ${depTime} (${status}: ${realDepFormatted})`);
+								const isActual = location.realtimeDepartureActual;
+								const status = isActual ? 'Departed' : 'Expected';
+								times.push(`Dep: ${scheduledDep} → ${realDepFormatted} (${status})`);
 							} else {
-								times.push(`Dep: ${depTime}`);
+								times.push(`Dep: ${scheduledDep}`);
 							}
 						}
 						
 						if (times.length > 0) {
-							stationLine.push(' | ' + times.join(' | '));
+							stationLine.push(`    ⏰ ${times.join(' | ')}`);
 						}
 						
-						// Platform
-						if (location.platform) {
-							const platform = location.platform;
-							const confirmed = location.platformConfirmed || false;
-							const changed = location.platformChanged || false;
-							let platformInfo = `Platform ${platform}`;
-							if (changed) {
-								platformInfo += ' (CHANGED)';
-							} else if (!confirmed) {
-								platformInfo += ' (Not confirmed)';
-							}
-							stationLine.push(`| ${platformInfo}`);
+						// Platform with clear status
+						const platformInfo = this.formatPlatformInfo(location);
+						if (platformInfo) {
+							stationLine.push(`    🚉 ${platformInfo}`);
 						}
 						
-						// Service location (current position)
+						// Current position with clear indicator
 						if (location.serviceLocation) {
-							const posMap: { [key: string]: string } = {
-								'APPR_STAT': 'Approaching Station',
-								'APPR_PLAT': 'Arriving',
-								'AT_PLAT': 'At Platform',
-								'DEP_PREP': 'Preparing to depart',
-								'DEP_READY': 'Ready to depart'
-							};
-							const position = posMap[location.serviceLocation] || location.serviceLocation;
-							stationLine.push(`| 📍 ${position}`);
+							const position = this.interpretServiceLocation(location.serviceLocation);
+							stationLine.push(`    📍 ${position}`);
 						}
 						
-						// Cancellation info
+						// Cancellation with reason
 						if (location.cancelReasonShortText) {
-							stationLine.push(`| ❌ ${location.cancelReasonShortText}`);
+							stationLine.push(`    ❌ CANCELLED: ${location.cancelReasonShortText}`);
+							if (location.cancelReasonLongText && location.cancelReasonLongText !== location.cancelReasonShortText) {
+								stationLine.push(`       ${location.cancelReasonLongText}`);
+							}
 						}
 						
-						serviceInfo.push(stationLine.join(' '));
+						result.push(stationLine.join('\n'));
+					}
+					
+					// Service summary
+					if (data.realtimeActivated) {
+						result.push('', '📊 SERVICE STATUS: Live tracking active');
+					} else {
+						result.push('', '📊 SERVICE STATUS: Schedule only (no live tracking)');
 					}
 					
 					return {
-						content: [{ type: "text", text: serviceInfo.join('\n') }]
+						content: [{ type: "text", text: result.join('\n') }]
 					};
 					
 				} catch (error: any) {
@@ -479,188 +568,389 @@ export class RealtimeTrainsMCP extends McpAgent {
 			}
 		);
 
-		// Search for station information
+		// Tool 4: Track Service Progress - Real-time journey tracking and current position
 		this.server.tool(
-			"search_station_info",
-			{ 
-				query: z.string().describe("Station name, partial name, or code to search for. Can be full name (Bath Spa, Bristol Temple Meads, London Paddington), partial name (Bath, Bristol, London, Montpelier), or existing code to verify (BTH, BRI, PAD). Case insensitive. Returns matching station codes and full names. Use this tool first if you don't know a station's 3-letter CRS code.")
+			"track_service_progress",
+			{
+				service_uid: z.string().describe("6-character service identifier found in departure/arrival board results (e.g., W72419, C12345, S98765). Must have real-time tracking activated."),
+				date: z.string().optional().describe("Date in YYYY/MM/DD format with forward slashes (e.g., 2025/01/31). Must match the date when the service UID was found. Defaults to today if omitted.")
 			},
-			async ({ query }: { query: string }) => {
-				const commonStations: { [key: string]: string } = {
-					// London Stations
-					'PAD': 'London Paddington',
-					'WAT': 'London Waterloo', 
-					'VIC': 'London Victoria',
-					'EUS': 'London Euston',
-					'KGX': 'London Kings Cross',
-					'LST': 'London Liverpool Street',
-					'CHX': 'London Charing Cross',
-					'LBG': 'London Bridge',
-					'CLJ': 'Clapham Junction',
-					'STP': 'London St Pancras International',
-					'MOG': 'London Moorgate',
-					'FST': 'London Fenchurch Street',
-					'MYB': 'London Marylebone',
-					
-					// GWR Route - Bath/Bristol/London
-					'BTH': 'Bath Spa',
-					'BRI': 'Bristol Temple Meads',
-					'MTP': 'Montpelier',
-					'CPM': 'Chippenham',
-					'SWI': 'Swindon',
-					'RDG': 'Reading',
-					'DID': 'Didcot Parkway',
-					'NWP': 'Newport (South Wales)',
-					'CDF': 'Cardiff Central',
-					'SLA': 'Slough',
-					'TAU': 'Taunton',
-					'EXD': 'Exeter St Davids',
-					'PLY': 'Plymouth',
-					'TRU': 'Truro',
-					'PNZ': 'Penzance',
-					
-					// Major Cities
-					'BHM': 'Birmingham New Street',
-					'MAN': 'Manchester Piccadilly',
-					'LDS': 'Leeds',
-					'LIV': 'Liverpool Lime Street',
-					'NCL': 'Newcastle',
-					'EDB': 'Edinburgh Waverley',
-					'GLC': 'Glasgow Central',
-					'GLQ': 'Glasgow Queen Street',
-					'SHF': 'Sheffield',
-					'NOT': 'Nottingham',
-					'LCR': 'Leicester',
-					'COV': 'Coventry',
-					'WAR': 'Warrington Central',
-					'PRS': 'Preston',
-					'BPW': 'Blackpool North',
-					
-					// South/Southeast
-					'BTN': 'Brighton',
-					'HSG': 'Hastings',
-					'ASH': 'Ashford International',
-					'CTM': 'Chatham',
-					'DVP': 'Dover Priory',
-					'FKS': 'Folkestone Central',
-					'MAR': 'Margate',
-					'RAM': 'Ramsgate',
-					'CTC': 'Canterbury West',
-					'TON': 'Tonbridge',
-					'SEV': 'Sevenoaks',
-					'GFD': 'Guildford',
-					'WOK': 'Woking',
-					'SUR': 'Surbiton',
-					'WIM': 'Wimbledon',
-					'EPH': 'East Putney',
-					
-					// East/Northeast
-					'CBG': 'Cambridge',
-					'OXF': 'Oxford',
-					'YRK': 'York',
-					'DAR': 'Darlington',
-					'DUR': 'Durham',
-					'MDL': 'Middlesbrough',
-					'HUL': 'Hull',
-					'SCU': 'Scunthorpe',
-					'GNT': 'Grantham',
-					'PBO': 'Peterborough',
-					'NWI': 'Norwich',
-					'IPS': 'Ipswich',
-					'COL': 'Colchester',
-					'CHM': 'Chelmsford',
-					'SOU': 'Southend Central',
-					
-					// Wales
-					'SWA': 'Swansea',
-					'ABG': 'Abergavenny',
-					'CHR': 'Chepstow',
-					'CWL': 'Cwmbran',
-					'NPT': 'Neath',
-					'PYE': 'Port Talbot Parkway',
-					'BGN': 'Bridgend',
-					'LLE': 'Llanelli',
-					'CAM': 'Carmarthen',
-					'TEN': 'Tenby',
-					'PMB': 'Pembroke',
-					'HAV': 'Haverfordwest',
-					'ABH': 'Aberystwyth',
-					'PWL': 'Pwllheli',
-					'BAN': 'Bangor (Gwynedd)',
-					'HLY': 'Holyhead',
-					'WRX': 'Wrexham General',
-					
-					// Scotland
-					'ABD': 'Aberdeen',
-					'DUN': 'Dundee',
-					'STG': 'Stirling',
-					'PKS': 'Perth',
-					'INV': 'Inverness',
-					'AYR': 'Ayr',
-					'KMK': 'Kilmarnock',
-					'IRV': 'Irvine',
-					'PIS': 'Paisley Gilmour Street',
-					'FAL': 'Falkirk High',
-					'LIN': 'Linlithgow',
-					'LVG': 'Livingston North',
-					'MTH': 'Motherwell',
-					'HAM': 'Hamilton Central',
-					'EKL': 'East Kilbride',
-					
-					// Midlands/North
-					'WOL': 'Wolverhampton',
-					'STA': 'Stafford',
-					'STO': 'Stoke-on-Trent',
-					'MAC': 'Macclesfield',
-					'STK': 'Stockport',
-					'WIG': 'Wigan North Western',
-					'BOL': 'Bolton',
-					'BUR': 'Burnley Central',
-					'BLK': 'Blackburn',
-					'LAN': 'Lancaster',
-					'CAR': 'Carlisle',
-					'PEN': 'Penrith',
-					'OXN': 'Oxenholme Lake District',
-					'KEN': 'Kendal',
-					'WIN': 'Windermere',
-					'BAR': 'Barrow-in-Furness'
-				};
-				
-				const queryUpper = query.toUpperCase();
-				
-				// Try exact code match first
-				if (commonStations[queryUpper]) {
-					return {
-						content: [{ type: "text", text: `Station Code: ${queryUpper} = ${commonStations[queryUpper]}` }]
-					};
-				}
-				
-				// Try partial name match
-				const matches = [];
-				for (const [code, name] of Object.entries(commonStations)) {
-					if (name.toUpperCase().includes(query.toUpperCase())) {
-						matches.push(`${code}: ${name}`);
+			"Track the real-time progress of a specific train service showing current location, journey completion percentage, completed stops, and upcoming schedule. Use this when users want to know 'where is train [service_uid] right now' or track a train's live journey progress. Returns current position with progress bar, list of completed/pending stops with status icons, next stops preview, and live update timestamp. Only works with services that have real-time tracking activated - will return an error for schedule-only services. Perfect for monitoring a specific train's journey in real-time.",
+			async ({ service_uid, date }: { service_uid: string; date?: string }) => {
+				try {
+					const validatedDate = this.validateAndFormatDate(date);
+					const dateMatch = validatedDate.match(/^(\d{4})\/(\d{2})\/(\d{2})$/);
+					if (!dateMatch) {
+						return {
+							content: [{ type: "text", text: 'Error: Invalid date format' }]
+						};
 					}
-				}
-				
-				if (matches.length > 0) {
-					const result = `Stations matching '${query}':\n${matches.join('\n')}`;
-					return {
-						content: [{ type: "text", text: result }]
-					};
-				} else {
-					const result = `No common stations found for '${query}'.
-
-Try searching with a 3-letter CRS code (e.g., PAD, WAT, BHM) or check:
-- National Rail website for station codes
-- The query might need to be more specific
-
-Some popular station codes:
-PAD - London Paddington, WAT - London Waterloo, VIC - London Victoria
-BHM - Birmingham New Street, MAN - Manchester Piccadilly, LDS - Leeds`;
+					
+					const [, year, month, day] = dateMatch;
+					const endpoint = `/json/service/${service_uid.toUpperCase()}/${year}/${month}/${day}`;
+					const data = await this.makeApiRequest(endpoint);
+					
+					if (!data.realtimeActivated) {
+						return {
+							content: [{ type: "text", text: `Service ${service_uid.toUpperCase()} does not have real-time tracking activated. Use get_service_details for schedule information.` }]
+						};
+					}
+					
+					// Service Header
+					const origins = this.extractServiceOrigins(data);
+					const destinations = this.extractServiceDestinations(data);
+					
+					const result = [
+						`🚂 TRACKING ${service_uid.toUpperCase()} - ${data.runDate || validatedDate}`,
+						`${origins[0]} → ${destinations[0]}`,
+						`🏢 ${data.atocName || 'Unknown'} | 🚊 ${data.runningIdentity || data.trainIdentity || 'Unknown'}`,
+						'═'.repeat(60)
+					];
+					
+					// Find current position and progress
+					const locations = data.locations || [];
+					let currentPosition = null;
+					let currentLocationIndex = -1;
+					let completedStops = 0;
+					let totalStops = locations.length;
+					
+					// Analyze progress through journey
+					for (let i = 0; i < locations.length; i++) {
+						const location = locations[i];
+						
+						// Check if train has departed this location
+						const hasDeparted = location.realtimeDepartureActual || 
+							(location.realtimeDeparture && location.displayAs === 'ORIGIN');
+						
+						// Check if train has arrived at this location
+						const hasArrived = location.realtimeArrivalActual ||
+							(location.realtimeArrival && ['DESTINATION', 'CALL'].includes(location.displayAs));
+						
+						if (location.serviceLocation) {
+							currentPosition = {
+								location: location,
+								index: i,
+								status: this.interpretServiceLocation(location.serviceLocation)
+							};
+							currentLocationIndex = i;
+						}
+						
+						if (hasDeparted || (hasArrived && location.displayAs === 'DESTINATION')) {
+							completedStops++;
+						}
+					}
+					
+					// Progress indicator
+					const progressPercent = Math.round((completedStops / totalStops) * 100);
+					const progressBar = '█'.repeat(Math.floor(progressPercent / 5)) + '░'.repeat(20 - Math.floor(progressPercent / 5));
+					result.push(`📊 PROGRESS: ${progressPercent}% [${progressBar}] ${completedStops}/${totalStops} stops`);
+					
+					// Current position
+					if (currentPosition) {
+						const loc = currentPosition.location;
+						result.push('', `📍 CURRENT POSITION: ${currentPosition.status}`);
+						result.push(`🚉 ${loc.description || 'Unknown Station'}`);
+						
+						// Current timing info
+						const times = [];
+						if (loc.realtimeArrival) {
+							const arrTime = this.formatTime(loc.realtimeArrival);
+							const status = loc.realtimeArrivalActual ? 'Arrived' : 'Expected';
+							times.push(`Arr: ${arrTime} (${status})`);
+						}
+						if (loc.realtimeDeparture) {
+							const depTime = this.formatTime(loc.realtimeDeparture);
+							const status = loc.realtimeDepartureActual ? 'Departed' : 'Expected';
+							times.push(`Dep: ${depTime} (${status})`);
+						}
+						if (times.length > 0) {
+							result.push(`⏰ ${times.join(' | ')}`);
+						}
+						
+						// Platform info
+						const platformInfo = this.formatPlatformInfo(loc);
+						if (platformInfo) {
+							result.push(`🚉 ${platformInfo}`);
+						}
+					} else {
+						result.push('', '📍 CURRENT POSITION: Location data not available');
+					}
+					
+					result.push('', '🛤️  JOURNEY PROGRESS', '─'.repeat(60));
+					
+					// Compact journey overview showing status of each stop
+					for (let i = 0; i < locations.length; i++) {
+						const location = locations[i];
+						const stationName = location.description || 'Unknown';
+						
+						let statusIcon = '';
+						let statusText = '';
+						
+						// Determine status
+						if (location.realtimeDepartureActual || 
+							(location.realtimeArrivalActual && location.displayAs === 'DESTINATION')) {
+							statusIcon = '✅';
+							statusText = 'Completed';
+						} else if (location.serviceLocation) {
+							statusIcon = '🚂';
+							statusText = this.interpretServiceLocation(location.serviceLocation);
+						} else if (location.realtimeArrival || location.realtimeDeparture) {
+							statusIcon = '🕐';
+							statusText = 'Scheduled';
+						} else {
+							statusIcon = '⏳';
+							statusText = 'Pending';
+						}
+						
+						// Time info
+						let timeInfo = '';
+						if (location.displayAs === 'ORIGIN' && location.gbttBookedDeparture) {
+							timeInfo = `Dep: ${this.formatTime(location.gbttBookedDeparture)}`;
+						} else if (location.displayAs === 'DESTINATION' && location.gbttBookedArrival) {
+							timeInfo = `Arr: ${this.formatTime(location.gbttBookedArrival)}`;
+						} else if (location.gbttBookedArrival && location.gbttBookedDeparture) {
+							timeInfo = `${this.formatTime(location.gbttBookedArrival)}-${this.formatTime(location.gbttBookedDeparture)}`;
+						}
+						
+						result.push(`${statusIcon} ${stationName.padEnd(25)} ${timeInfo.padEnd(15)} ${statusText}`);
+					}
+					
+					// Next stops
+					const nextStops = locations.slice(currentLocationIndex + 1, currentLocationIndex + 4)
+						.filter(loc => !loc.realtimeDepartureActual);
+					
+					if (nextStops.length > 0) {
+						result.push('', '⏭️  NEXT STOPS');
+						for (const stop of nextStops) {
+							const stationName = stop.description || 'Unknown';
+							let timeInfo = '';
+							
+							if (stop.gbttBookedArrival) {
+								timeInfo = `Arr: ${this.formatTime(stop.gbttBookedArrival)}`;
+							}
+							if (stop.gbttBookedDeparture) {
+								timeInfo += timeInfo ? ` | Dep: ${this.formatTime(stop.gbttBookedDeparture)}` 
+									: `Dep: ${this.formatTime(stop.gbttBookedDeparture)}`;
+							}
+							
+							result.push(`  🔜 ${stationName} - ${timeInfo}`);
+						}
+					}
+					
+					// Summary
+					const now = new Date().toLocaleTimeString();
+					result.push('', `🕐 Last updated: ${now}`);
 					
 					return {
-						content: [{ type: "text", text: result }]
+						content: [{ type: "text", text: result.join('\n') }]
+					};
+					
+				} catch (error: any) {
+					return {
+						content: [{ type: "text", text: `Error: ${error.message}` }]
+					};
+				}
+			}
+		);
+
+		// Tool 5: Check Service Platform - Platform-specific information and change alerts
+		this.server.tool(
+			"check_service_platform",
+			{
+				service_uid: z.string().describe("6-character service identifier found in departure/arrival board results (e.g., W72419, C12345, S98765). Always exactly 6 characters."),
+				date: z.string().optional().describe("Date in YYYY/MM/DD format with forward slashes (e.g., 2025/01/31). Must match the date when the service UID was found. Defaults to today if omitted."),
+				station_code: z.string().optional().describe("3-letter CRS station code to focus on specific station (e.g., BTH=Bath Spa, PAD=London Paddington). If omitted, shows platform information for all stations on the service route.")
+			},
+			"Check platform information for a specific train service, with optional focus on a particular station. Shows platform assignments, confirmation status, and any platform changes with clear alerts. Use this when users need platform information for a specific train ('what platform is train [service_uid] using?'), either across its whole journey or at a particular station. Returns platform numbers with confirmation status (confirmed/not confirmed/changed), timing context, and prominent alerts for any platform changes. Essential for passengers who need to know exactly which platform to use and whether there have been any last-minute changes.",
+			async ({ service_uid, date, station_code }: { service_uid: string; date?: string; station_code?: string }) => {
+				try {
+					const validatedDate = this.validateAndFormatDate(date);
+					const dateMatch = validatedDate.match(/^(\d{4})\/(\d{2})\/(\d{2})$/);
+					if (!dateMatch) {
+						return {
+							content: [{ type: "text", text: 'Error: Invalid date format' }]
+						};
+					}
+					
+					const [, year, month, day] = dateMatch;
+					const endpoint = `/json/service/${service_uid.toUpperCase()}/${year}/${month}/${day}`;
+					const data = await this.makeApiRequest(endpoint);
+					
+					// Service Header
+					const origins = this.extractServiceOrigins(data);
+					const destinations = this.extractServiceDestinations(data);
+					
+					const result = [
+						`🚉 PLATFORM CHECK - Service ${service_uid.toUpperCase()}`,
+						`${origins[0]} → ${destinations[0]}`,
+						`🏢 ${data.atocName || 'Unknown'} | 📅 ${data.runDate || validatedDate}`,
+						'═'.repeat(60)
+					];
+					
+					const locations = data.locations || [];
+					let platformChanges = 0;
+					let unconfirmedPlatforms = 0;
+					let totalPlatforms = 0;
+					
+					// Filter locations if specific station requested
+					let locationsToCheck = locations;
+					if (station_code) {
+						locationsToCheck = locations.filter(loc => 
+							loc.crs?.toUpperCase() === station_code.toUpperCase()
+						);
+						
+						if (locationsToCheck.length === 0) {
+							return {
+								content: [{ type: "text", text: `Service ${service_uid.toUpperCase()} does not call at station ${station_code.toUpperCase()} on ${validatedDate}` }]
+							};
+						}
+						
+						result[0] = `🚉 PLATFORM CHECK - ${station_code.toUpperCase()} Station`;
+						result.push(`Service ${service_uid.toUpperCase()}: ${origins[0]} → ${destinations[0]}`);
+					}
+					
+					// Analyze platform information
+					const platformData = [];
+					
+					for (const location of locationsToCheck) {
+						if (!location.platform) continue;
+						
+						totalPlatforms++;
+						const stationName = location.description || 'Unknown Station';
+						const platform = location.platform;
+						const confirmed = location.platformConfirmed || false;
+						const changed = location.platformChanged || false;
+						
+						if (changed) platformChanges++;
+						if (!confirmed) unconfirmedPlatforms++;
+						
+						// Platform status
+						let platformStatus = '';
+						let alertIcon = '🚉';
+						
+						if (changed) {
+							platformStatus = 'CHANGED';
+							alertIcon = '⚠️';
+						} else if (!confirmed) {
+							platformStatus = 'Not confirmed';
+							alertIcon = '❓';
+						} else {
+							platformStatus = 'Confirmed';
+							alertIcon = '✅';
+						}
+						
+						// Times for context
+						const times = [];
+						if (location.gbttBookedArrival) {
+							times.push(`Arr: ${this.formatTime(location.gbttBookedArrival)}`);
+						}
+						if (location.gbttBookedDeparture) {
+							times.push(`Dep: ${this.formatTime(location.gbttBookedDeparture)}`);
+						}
+						const timeStr = times.length > 0 ? ` | ${times.join(' - ')}` : '';
+						
+						// Real-time platform updates
+						let realtimeInfo = '';
+						if (location.realtimeArrival || location.realtimeDeparture) {
+							const realTimes = [];
+							if (location.realtimeArrival) {
+								const status = location.realtimeArrivalActual ? 'Arrived' : 'Expected';
+								realTimes.push(`${status} ${this.formatTime(location.realtimeArrival)}`);
+							}
+							if (location.realtimeDeparture) {
+								const status = location.realtimeDepartureActual ? 'Departed' : 'Expected';
+								realTimes.push(`${status} ${this.formatTime(location.realtimeDeparture)}`);
+							}
+							if (realTimes.length > 0) {
+								realtimeInfo = ` | ${realTimes.join(' | ')}`;
+							}
+						}
+						
+						platformData.push({
+							station: stationName,
+							platform: platform,
+							status: platformStatus,
+							icon: alertIcon,
+							timeStr: timeStr,
+							realtimeInfo: realtimeInfo,
+							displayAs: location.displayAs,
+							changed: changed,
+							confirmed: confirmed
+						});
+					}
+					
+					// Summary
+					if (totalPlatforms === 0) {
+						result.push('ℹ️  No platform information available for this service');
+					} else {
+						result.push(`📊 PLATFORM SUMMARY: ${totalPlatforms} platforms assigned`);
+						
+						if (platformChanges > 0) {
+							result.push(`⚠️  ALERTS: ${platformChanges} platform change(s) detected`);
+						}
+						
+						if (unconfirmedPlatforms > 0) {
+							result.push(`❓ ${unconfirmedPlatforms} platform(s) not yet confirmed`);
+						}
+						
+						if (platformChanges === 0 && unconfirmedPlatforms === 0) {
+							result.push('✅ All platforms confirmed with no changes');
+						}
+					}
+					
+					result.push('', '🚉 PLATFORM DETAILS', '─'.repeat(60));
+					
+					// Show platform details
+					if (platformData.length === 0) {
+						result.push('No platform assignments found');
+					} else {
+						// Sort by changed platforms first, then by time
+						platformData.sort((a, b) => {
+							if (a.changed && !b.changed) return -1;
+							if (!a.changed && b.changed) return 1;
+							return 0;
+						});
+						
+						for (const data of platformData) {
+							result.push(`${data.icon} ${data.station}`);
+							result.push(`   Platform ${data.platform} - ${data.status}${data.timeStr}${data.realtimeInfo}`);
+							
+							// Add context for display type
+							let contextInfo = '';
+							if (data.displayAs === 'ORIGIN') {
+								contextInfo = 'Departure platform';
+							} else if (data.displayAs === 'DESTINATION') {
+								contextInfo = 'Arrival platform';
+							} else {
+								contextInfo = 'Calling platform';
+							}
+							result.push(`   ${contextInfo}`);
+							
+							result.push('');
+						}
+					}
+					
+					// Quick reference for platform changes
+					const changedPlatforms = platformData.filter(p => p.changed);
+					if (changedPlatforms.length > 0) {
+						result.push('⚠️  PLATFORM CHANGES ALERT');
+						for (const change of changedPlatforms) {
+							result.push(`   ${change.station}: Platform ${change.platform} (CHANGED)`);
+						}
+						result.push('');
+					}
+					
+					// Update timestamp
+					const now = new Date().toLocaleTimeString();
+					result.push(`🕐 Platform information updated: ${now}`);
+					
+					return {
+						content: [{ type: "text", text: result.join('\n') }]
+					};
+					
+				} catch (error: any) {
+					return {
+						content: [{ type: "text", text: `Error: ${error.message}` }]
 					};
 				}
 			}
@@ -683,11 +973,12 @@ Available endpoints:
 • /sse - Server-Sent Events (for MCP clients)
 • /mcp - MCP over HTTP
 
-Tools available:
-• search_departures - Get train departures from a station
-• search_arrivals - Get train arrivals at a station  
-• get_service_details - Get detailed service information
-• search_station_info - Find station codes
+Enhanced tools available:
+• get_live_departure_board - Clean departure board with real-time status
+• get_live_arrivals_board - Arrivals with origin prominence
+• get_service_details - Organized service timeline with progress indicators
+• track_service_progress - Real-time journey tracking with position
+• check_service_platform - Platform information and change alerts
 
 Example: Connect to ${url.origin}/sse with an MCP client`, { 
 			headers: { 'Content-Type': 'text/plain' }
