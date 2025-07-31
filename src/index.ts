@@ -226,16 +226,18 @@ export class RealtimeTrainsMCP extends McpAgent {
 				description: "Get a live departure board for a station showing trains leaving in the next few hours, like a real station display board. Use this when users want to see 'what trains are leaving from [station]' or need departure information to catch a train. Returns a formatted departure board with scheduled and real-time departure times, destinations, platforms, delays, and current status (approaching, departed, delayed, on time). Shows most recent departures first. Service UIDs in results can be used with get_service_details, track_service_progress, or check_service_platform for more information about specific trains.",
 				inputSchema: {
 					station_code: z.string().describe("3-letter CRS station code (e.g., BTH=Bath Spa, PAD=London Paddington, BRI=Bristol Temple Meads, MTP=Montpelier, RDG=Reading). Use this exact format."),
-					max_results: z.number().optional().describe("Maximum number of departures to show (default: 10, max: 20)")
+					max_results: z.number().optional().describe("Maximum number of departures to show (default: 10, max: 20)"),
+					exclude_platforms: z.array(z.string()).optional().describe("Platform numbers to exclude (e.g., ['A', 'B'] to exclude Elizabeth Line at Paddington)")
 				}
 			},
-			async ({ station_code, max_results = 10 }: { station_code: string; max_results?: number }) => {
+			async ({ station_code, max_results = 10, exclude_platforms }: { station_code: string; max_results?: number; exclude_platforms?: string[] }) => {
 				try {
 					const date = this.validateAndFormatDate();
 					
-					// Get current time in HHMM format for filtering
+					// Get current time in UK timezone (Europe/London) in HHMM format for filtering
 					const now = new Date();
-					const currentTimeHHMM = String(now.getHours()).padStart(2, '0') + String(now.getMinutes()).padStart(2, '0');
+					const ukTime = new Date(now.toLocaleString("en-US", {timeZone: "Europe/London"}));
+					const currentTimeHHMM = String(ukTime.getHours()).padStart(2, '0') + String(ukTime.getMinutes()).padStart(2, '0');
 					
 					// Add time filtering to show only current/upcoming departures
 					const endpoint = `/json/search/${station_code.toUpperCase()}/${date}?from=${currentTimeHHMM}`;
@@ -269,18 +271,35 @@ export class RealtimeTrainsMCP extends McpAgent {
 					// Sort by departure time
 					upcomingDepartures.sort((a, b) => a.scheduledTime.localeCompare(b.scheduledTime));
 					
+					// Apply platform filtering if exclude_platforms is provided
+					if (exclude_platforms && exclude_platforms.length > 0) {
+						const originalCount = upcomingDepartures.length;
+						upcomingDepartures = upcomingDepartures.filter(item => {
+							const platform = item.locationDetail?.platform;
+							// Don't exclude if platform is not set/available
+							if (!platform) return true;
+							// Exclude if platform matches any in exclude list
+							return !exclude_platforms.includes(platform);
+						});
+
+						console.log(`Platform filtering: ${originalCount} → ${upcomingDepartures.length} services (excluded: ${exclude_platforms.join(', ')})`);
+					}
+					
 					if (upcomingDepartures.length === 0) {
 						return {
-							content: [{ type: "text", text: `No upcoming departures found for ${station_code.toUpperCase()} from ${now.toLocaleTimeString()}` }]
+							content: [{ type: "text", text: `No upcoming departures found for ${station_code.toUpperCase()} from ${ukTime.toLocaleTimeString()}${exclude_platforms ? ` (after excluding platforms: ${exclude_platforms.join(', ')})` : ''}` }]
 						};
 					}
 					
 					const result = [
 						`🚂 LIVE DEPARTURES - ${stationName}`,
-						`${now.toLocaleTimeString()} | ${date} | Showing from ${this.formatTime(currentTimeHHMM)}`,
+						`${ukTime.toLocaleTimeString()} | ${date} | Showing from ${this.formatTime(currentTimeHHMM)}`,
+						exclude_platforms && exclude_platforms.length > 0
+							? `(Excluding platforms: ${exclude_platforms.join(', ')})`
+							: '',
 						'─'.repeat(60),
 						'Time    | Destination           | Plat | Status'
-					];
+					].filter(line => line !== '');
 					
 					for (let i = 0; i < Math.min(upcomingDepartures.length, limit); i++) {
 						const { service, locationDetail } = upcomingDepartures[i];
@@ -358,16 +377,18 @@ export class RealtimeTrainsMCP extends McpAgent {
 				description: "Get a live arrivals board for a station showing trains arriving in the next few hours. Use this when users want to see 'what trains are arriving at [station]' or need to meet someone arriving by train. Returns a formatted arrivals board with scheduled and real-time arrival times, origins (where trains are coming FROM), platforms, delays, and current status (approaching, arrived, delayed, on time). Emphasizes origin stations since this is for meeting passengers. Service UIDs in results can be used with get_service_details, track_service_progress, or check_service_platform for detailed information about specific trains.",
 				inputSchema: {
 					station_code: z.string().describe("3-letter CRS station code (e.g., BTH=Bath Spa, PAD=London Paddington, BRI=Bristol Temple Meads, MTP=Montpelier, RDG=Reading). Use this exact format."),
-					max_results: z.number().optional().describe("Maximum number of arrivals to show (default: 10, max: 20)")
+					max_results: z.number().optional().describe("Maximum number of arrivals to show (default: 10, max: 20)"),
+					exclude_platforms: z.array(z.string()).optional().describe("Platform numbers to exclude (e.g., ['A', 'B'] to exclude Elizabeth Line at Paddington)")
 				}
 			},
-			async ({ station_code, max_results = 10 }: { station_code: string; max_results?: number }) => {
+			async ({ station_code, max_results = 10, exclude_platforms }: { station_code: string; max_results?: number; exclude_platforms?: string[] }) => {
 				try {
 					const date = this.validateAndFormatDate();
 					
-					// Get current time in HHMM format for filtering
+					// Get current time in UK timezone (Europe/London) in HHMM format for filtering
 					const now = new Date();
-					const currentTimeHHMM = String(now.getHours()).padStart(2, '0') + String(now.getMinutes()).padStart(2, '0');
+					const ukTime = new Date(now.toLocaleString("en-US", {timeZone: "Europe/London"}));
+					const currentTimeHHMM = String(ukTime.getHours()).padStart(2, '0') + String(ukTime.getMinutes()).padStart(2, '0');
 					
 					// Add time filtering to show only current/upcoming arrivals
 					const endpoint = `/json/search/${station_code.toUpperCase()}/${date}?from=${currentTimeHHMM}`;
@@ -404,18 +425,35 @@ export class RealtimeTrainsMCP extends McpAgent {
 					// Sort by scheduled arrival time
 					upcomingArrivals.sort((a, b) => a.scheduledTime.localeCompare(b.scheduledTime));
 					
+					// Apply platform filtering if exclude_platforms is provided
+					if (exclude_platforms && exclude_platforms.length > 0) {
+						const originalCount = upcomingArrivals.length;
+						upcomingArrivals = upcomingArrivals.filter(item => {
+							const platform = item.arrivalLocation?.platform;
+							// Don't exclude if platform is not set/available
+							if (!platform) return true;
+							// Exclude if platform matches any in exclude list
+							return !exclude_platforms.includes(platform);
+						});
+
+						console.log(`Platform filtering: ${originalCount} → ${upcomingArrivals.length} services (excluded: ${exclude_platforms.join(', ')})`);
+					}
+					
 					if (upcomingArrivals.length === 0) {
 						return {
-							content: [{ type: "text", text: `No upcoming arrivals found for ${station_code.toUpperCase()} from ${now.toLocaleTimeString()}` }]
+							content: [{ type: "text", text: `No upcoming arrivals found for ${station_code.toUpperCase()} from ${ukTime.toLocaleTimeString()}${exclude_platforms ? ` (after excluding platforms: ${exclude_platforms.join(', ')})` : ''}` }]
 						};
 					}
 					
 					const result = [
 						`🚊 LIVE ARRIVALS - ${stationName}`,
-						`${now.toLocaleTimeString()} | ${date} | Showing from ${this.formatTime(currentTimeHHMM)}`,
+						`${ukTime.toLocaleTimeString()} | ${date} | Showing from ${this.formatTime(currentTimeHHMM)}`,
+						exclude_platforms && exclude_platforms.length > 0
+							? `(Excluding platforms: ${exclude_platforms.join(', ')})`
+							: '',
 						'─'.repeat(60),
 						'Time    | From                  | Plat | Status'
-					];
+					].filter(line => line !== '');
 					
 					for (let i = 0; i < Math.min(upcomingArrivals.length, limit); i++) {
 						const { service, arrivalLocation } = upcomingArrivals[i];
