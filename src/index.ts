@@ -223,7 +223,7 @@ export class RealtimeTrainsMCP extends McpAgent {
 			"get_live_departure_board",
 			{
 				title: "Live Departure Board",
-				description: "Get a live departure board for a station showing trains leaving in the next few hours, like a real station display board. Use this when users want to see 'what trains are leaving from [station]' or need departure information to catch a train. Returns a formatted departure board with scheduled and real-time departure times, destinations, platforms, delays, and current status (approaching, departed, delayed, on time). Shows most recent departures first. Service UIDs in results can be used with get_service_details, track_service_progress, or check_service_platform for more information about specific trains.",
+				description: "Get a live departure board for a station showing trains leaving in the next few hours, like a real station display board. Use this when users want to see 'what trains are leaving from [station]' or need departure information to catch a train. Returns a formatted departure board with scheduled and real-time departure times, destinations, platforms, delays, current status (approaching, departed, delayed, on time), and service UIDs. Each entry includes the service UID which can be used directly with get_service_details, track_service_progress, or check_service_platform for detailed information about specific trains.",
 				inputSchema: {
 					station_code: z.string().describe("3-letter CRS station code (e.g., BTH=Bath Spa, PAD=London Paddington, BRI=Bristol Temple Meads, MTP=Montpelier, RDG=Reading). Use this exact format."),
 					max_results: z.number().optional().describe("Maximum number of departures to show (default: 10, max: 20)"),
@@ -297,8 +297,8 @@ export class RealtimeTrainsMCP extends McpAgent {
 						exclude_platforms && exclude_platforms.length > 0
 							? `(Excluding platforms: ${exclude_platforms.join(', ')})`
 							: '',
-						'─'.repeat(60),
-						'Time    | Destination           | Plat | Status'
+						'─'.repeat(75),
+						'Time    | Destination           | Plat | Status         | Service'
 					].filter(line => line !== '');
 					
 					for (let i = 0; i < Math.min(upcomingDepartures.length, limit); i++) {
@@ -350,7 +350,8 @@ export class RealtimeTrainsMCP extends McpAgent {
 						}
 						
 						const timeStr = this.formatTime(scheduledTime);
-						result.push(`${timeStr.padEnd(8)}| ${destination} | ${platform} | ${status}`);
+						const serviceUid = service.serviceUid || 'N/A';
+						result.push(`${timeStr.padEnd(8)}| ${destination} | ${platform} | ${status.padEnd(14)} | ${serviceUid}`);
 					}
 					
 					if (result.length === 4) {
@@ -374,7 +375,7 @@ export class RealtimeTrainsMCP extends McpAgent {
 			"get_live_arrivals_board",
 			{
 				title: "Live Arrivals Board",
-				description: "Get a live arrivals board for a station showing trains arriving in the next few hours. Use this when users want to see 'what trains are arriving at [station]' or need to meet someone arriving by train. Returns a formatted arrivals board with scheduled and real-time arrival times, origins (where trains are coming FROM), platforms, delays, and current status (approaching, arrived, delayed, on time). Emphasizes origin stations since this is for meeting passengers. Service UIDs in results can be used with get_service_details, track_service_progress, or check_service_platform for detailed information about specific trains.",
+				description: "Get a live arrivals board for a station showing trains arriving in the next few hours. Use this when users want to see 'what trains are arriving at [station]' or need to meet someone arriving by train. Returns a formatted arrivals board with scheduled and real-time arrival times, origins (where trains are coming FROM), platforms, delays, current status (approaching, arrived, delayed, on time), and service UIDs. Emphasizes origin stations since this is for meeting passengers. Each entry includes the service UID which can be used directly with get_service_details, track_service_progress, or check_service_platform for detailed information about specific trains.",
 				inputSchema: {
 					station_code: z.string().describe("3-letter CRS station code (e.g., BTH=Bath Spa, PAD=London Paddington, BRI=Bristol Temple Meads, MTP=Montpelier, RDG=Reading). Use this exact format."),
 					max_results: z.number().optional().describe("Maximum number of arrivals to show (default: 10, max: 20)"),
@@ -451,8 +452,8 @@ export class RealtimeTrainsMCP extends McpAgent {
 						exclude_platforms && exclude_platforms.length > 0
 							? `(Excluding platforms: ${exclude_platforms.join(', ')})`
 							: '',
-						'─'.repeat(60),
-						'Time    | From                  | Plat | Status'
+						'─'.repeat(75),
+						'Time    | From                  | Plat | Status         | Service'
 					].filter(line => line !== '');
 					
 					for (let i = 0; i < Math.min(upcomingArrivals.length, limit); i++) {
@@ -504,7 +505,8 @@ export class RealtimeTrainsMCP extends McpAgent {
 						}
 						
 						const timeStr = this.formatTime(scheduledTime);
-						result.push(`${timeStr.padEnd(8)}| ${origin} | ${platform} | ${status}`);
+						const serviceUid = service.serviceUid || 'N/A';
+						result.push(`${timeStr.padEnd(8)}| ${origin} | ${platform} | ${status.padEnd(14)} | ${serviceUid}`);
 					}
 					
 					if (result.length === 4) {
