@@ -60,8 +60,8 @@ export class RealtimeTrainsMCP extends McpAgent {
 		this.server.tool(
 			"search_departures",
 			{ 
-				station_code: z.string().describe("3-letter CRS station code (e.g., PAD for London Paddington, BHM for Birmingham)"),
-				date: z.string().optional().describe("Date in YYYY/MM/DD format (optional, defaults to today)")
+				station_code: z.string().describe("3-letter CRS station code. GWR/London codes: BTH=Bath Spa, BRI=Bristol Temple Meads, MTP=Montpelier, CPM=Chippenham, SWI=Swindon, RDG=Reading, DID=Didcot Parkway, PAD=London Paddington, WAT=London Waterloo, VIC=London Victoria, EUS=London Euston. Use search_station_info tool to find other station codes."),
+				date: z.string().optional().describe("Date in YYYY/MM/DD format with forward slashes and leading zeros (e.g., 2025/01/31, 2025/02/05 not 2025/2/5). Must use forward slashes, not hyphens. Only current and future dates work reliably. Defaults to today if omitted.")
 			},
 			async ({ station_code, date }) => {
 				try {
@@ -151,8 +151,8 @@ export class RealtimeTrainsMCP extends McpAgent {
 		this.server.tool(
 			"search_arrivals",
 			{ 
-				station_code: z.string().describe("3-letter CRS station code (e.g., PAD for London Paddington, WAT for London Waterloo)"),
-				date: z.string().optional().describe("Date in YYYY/MM/DD format (optional, defaults to today)")
+				station_code: z.string().describe("3-letter CRS station code. GWR/London codes: BTH=Bath Spa, BRI=Bristol Temple Meads, MTP=Montpelier, CPM=Chippenham, SWI=Swindon, RDG=Reading, DID=Didcot Parkway, PAD=London Paddington, WAT=London Waterloo, VIC=London Victoria, EUS=London Euston. Use search_station_info tool to find other station codes."),
+				date: z.string().optional().describe("Date in YYYY/MM/DD format with forward slashes and leading zeros (e.g., 2025/01/31, 2025/02/05 not 2025/2/5). Must use forward slashes, not hyphens. Only current and future dates work reliably. Defaults to today if omitted.")
 			},
 			async ({ station_code, date }) => {
 				try {
@@ -253,8 +253,8 @@ export class RealtimeTrainsMCP extends McpAgent {
 		this.server.tool(
 			"get_service_details",
 			{ 
-				service_uid: z.string().describe("Service UID (6-character code like 'W72419')"),
-				date: z.string().optional().describe("Date in YYYY/MM/DD format (optional, defaults to today)")
+				service_uid: z.string().describe("6-character service identifier (1 letter + 5 numbers, e.g., W72419, C12345, S98765). Found in results from search_departures and search_arrivals tools. Always exactly 6 characters, case insensitive but typically uppercase."),
+				date: z.string().optional().describe("Date in YYYY/MM/DD format with forward slashes and leading zeros (e.g., 2025/01/31, 2025/02/05 not 2025/2/5). Must use forward slashes, not hyphens. Should match the date when the service UID was found. Only current and future dates work reliably. Defaults to today if omitted.")
 			},
 			async ({ service_uid, date }) => {
 				try {
@@ -397,7 +397,7 @@ export class RealtimeTrainsMCP extends McpAgent {
 		this.server.tool(
 			"search_station_info",
 			{ 
-				query: z.string().describe("Station name or code to search for")
+				query: z.string().describe("Station name, partial name, or code to search for. Can be full name (Bath Spa, Bristol Temple Meads, London Paddington), partial name (Bath, Bristol, London, Montpelier), or existing code to verify (BTH, BRI, PAD). Case insensitive. Returns matching station codes and full names. Use this tool first if you don't know a station's 3-letter CRS code.")
 			},
 			async ({ query }) => {
 				const commonStations: { [key: string]: string } = {
