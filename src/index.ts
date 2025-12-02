@@ -216,34 +216,6 @@ export class RealtimeTrainsMCP extends McpAgent {
 	}
 
 	/**
-	 * Normalize time from HH:MM or H:MM format to HHMM format
-	 * Ensures leading zeros and removes colons for API calls and comparisons
-	 */
-	private normalizeTimeToHHMM(time: string): string {
-		// Try to parse HH:MM or H:MM format
-		const match = time.match(/^(\d{1,2}):(\d{2})$/);
-		if (match) {
-			const hours = match[1].padStart(2, '0');
-			const minutes = match[2];
-			return hours + minutes;
-		}
-
-		// If already 4 digits without colon, validate and return
-		const cleaned = time.replace(/:/g, '');
-		if (cleaned.length === 4 && /^\d{4}$/.test(cleaned)) {
-			return cleaned;
-		}
-
-		// If 3 digits (e.g., "930" from malformed "9:30"), pad to 4
-		if (cleaned.length === 3 && /^\d{3}$/.test(cleaned)) {
-			return '0' + cleaned;
-		}
-
-		// Invalid format - throw error
-		throw new Error(`Invalid time format: ${time}. Expected HH:MM format (e.g., 09:30 or 14:00)`);
-	}
-
-	/**
 	 * Calculate delay in minutes
 	 */
 	private calculateDelay(scheduled?: string, actual?: string): number {
@@ -349,11 +321,10 @@ export class RealtimeTrainsMCP extends McpAgent {
 
 	/**
 	 * Lookup station code from name
-	 * Returns verified flag to indicate if code was found in our database
 	 */
-	private lookupStationCode(query: string): Array<{ name: string; code: string; verified: boolean }> {
+	private lookupStationCode(query: string): Array<{ name: string; code: string }> {
 		const q = query.toLowerCase().trim();
-		const results: Array<{ name: string; code: string; verified: boolean }> = [];
+		const results: Array<{ name: string; code: string }> = [];
 
 		// Check if already a valid 3-letter code
 		if (/^[A-Z]{3}$/i.test(q)) {
@@ -361,17 +332,13 @@ export class RealtimeTrainsMCP extends McpAgent {
 			const upperQ = q.toUpperCase();
 			for (const [name, code] of Object.entries(this.STATION_CODES)) {
 				if (code === upperQ) {
-					results.push({
-						name: name.split(' ').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' '),
-						code,
-						verified: true
-					});
+					results.push({ name: name.split(' ').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' '), code });
 					break;
 				}
 			}
 			if (results.length === 0) {
-				// Return as-is, might be valid but unverified
-				results.push({ name: query.toUpperCase(), code: q.toUpperCase(), verified: false });
+				// Return as-is, might be valid
+				results.push({ name: query.toUpperCase(), code: q.toUpperCase() });
 			}
 			return results;
 		}
@@ -382,7 +349,7 @@ export class RealtimeTrainsMCP extends McpAgent {
 				const displayName = name.split(' ').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
 				// Avoid duplicates
 				if (!results.find(r => r.code === code)) {
-					results.push({ name: displayName, code, verified: true });
+					results.push({ name: displayName, code });
 				}
 			}
 		}
@@ -470,59 +437,27 @@ RETURNS: Formatted board with times, destinations/origins, platforms, status, de
 						return { content: [{ type: "text", text: `Unknown station: ${station}` }] };
 					}
 					const stationCode = stationLookup[0].code;
-					const stationVerified = stationLookup[0].verified;
 
 					// Build endpoint
 					const apiDate = this.formatDateForApi(date);
-					let endpoint: string;
+					let endpoint = `/json/search/${stationCode}/${apiDate}`;
 
-					// Add destination filter if provided (must use /to/ format before date)
+					// Add destination filter if provided
 					if (to_station && type === "departures") {
 						const destLookup = this.lookupStationCode(to_station);
 						if (destLookup.length > 0) {
-							endpoint = `/json/search/${stationCode}/to/${destLookup[0].code}/${apiDate}`;
-						} else {
-							endpoint = `/json/search/${stationCode}/${apiDate}`;
+							endpoint += `/${destLookup[0].code}`;
 						}
-					} else {
-						endpoint = `/json/search/${stationCode}/${apiDate}`;
 					}
 
 					// Add time filter
 					const ukTime = this.getUKTime();
-					let timeFilter: string;
-					if (time_from) {
-						try {
-							timeFilter = this.normalizeTimeToHHMM(time_from);
-						} catch (error: any) {
-							return { content: [{ type: "text", text: `Error in time_from parameter: ${error.message}` }] };
-						}
-					} else {
-						timeFilter = `${String(ukTime.getHours()).padStart(2, '0')}${String(ukTime.getMinutes()).padStart(2, '0')}`;
-					}
-					endpoint += `?from=${timeFilter}`;
+					const timeFilter = time_from || `${String(ukTime.getHours()).padStart(2, '0')}${String(ukTime.getMinutes()).padStart(2, '0')}`;
+					endpoint += `?from=${timeFilter.replace(':', '')}`;
 
 					const data = await this.makeApiRequest(endpoint);
 					const services = data.services || [];
-					// Prefer our station name lookup over API response
-					const stationName = stationLookup[0].name || data.location?.name || stationCode;
-
-					// Warn if using unverified station code
-					let warningMsg = '';
-					if (!stationVerified) {
-						warningMsg = `WARNING: Station code "${stationCode}" not found in database.\n` +
-							`This may be a valid CRS code, but if results are unexpected, verify with lookup_station tool.\n\n`;
-					}
-					// Validate we got meaningful results
-					if (services.length === 0 && !stationVerified) {
-						return {
-							content: [{
-								type: "text",
-								text: `${warningMsg}No services found for station code "${stationCode}".\n\n` +
-									`This code may not be valid. Use lookup_station to find the correct CRS code.`
-							}]
-						};
-					}
+					const stationName = data.location?.name || stationCode;
 
 					// Process and filter services
 					let processed: Array<{
@@ -547,13 +482,7 @@ RETURNS: Formatted board with times, destinations/origins, platforms, status, de
 
 						// Time range filter
 						if (time_to) {
-							let timeToHHMM: string;
-							try {
-								timeToHHMM = this.normalizeTimeToHHMM(time_to);
-							} catch (error: any) {
-								return { content: [{ type: "text", text: `Error in time_to parameter: ${error.message}` }] };
-							}
-							const timeToNum = parseInt(timeToHHMM);
+							const timeToNum = parseInt(time_to.replace(':', ''));
 							const svcTimeNum = parseInt(timeField);
 							if (svcTimeNum > timeToNum) continue;
 						}
@@ -604,18 +533,11 @@ RETURNS: Formatted board with times, destinations/origins, platforms, status, de
 
 					// Build output
 					const header = type === "departures" ? "DEPARTURES" : "ARRIVALS";
-					const result: string[] = [];
-
-					// Add warning if present
-					if (warningMsg) {
-						result.push(warningMsg.trim());
-					}
-
-					result.push(
+					const result: string[] = [
 						`${header} - ${stationName}`,
 						`${ukTime.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })} | ${apiDate}`,
 						''
-					);
+					];
 
 					// Summary stats if requested
 					if (include_summary && services.length > 0) {
@@ -866,23 +788,14 @@ RETURNS: Matching journeys with departure/arrival times, duration, delays, platf
 					const fromName = fromLookup[0].name;
 					const toName = toLookup[0].name;
 
-					// Build endpoint with destination filter (must use /to/ format before date)
+					// Build endpoint with destination filter
 					const apiDate = this.formatDateForApi(date);
-					let endpoint = `/json/search/${fromCode}/to/${toCode}/${apiDate}`;
+					let endpoint = `/json/search/${fromCode}/${apiDate}/${toCode}`;
 
 					// Add time filter
 					const ukTime = this.getUKTime();
-					let timeFilter: string;
-					if (depart_after) {
-						try {
-							timeFilter = this.normalizeTimeToHHMM(depart_after);
-						} catch (error: any) {
-							return { content: [{ type: "text", text: `Error in depart_after parameter: ${error.message}` }] };
-						}
-					} else {
-						timeFilter = `${String(ukTime.getHours()).padStart(2, '0')}${String(ukTime.getMinutes()).padStart(2, '0')}`;
-					}
-					endpoint += `?from=${timeFilter}`;
+					let timeFilter = depart_after || `${String(ukTime.getHours()).padStart(2, '0')}:${String(ukTime.getMinutes()).padStart(2, '0')}`;
+					endpoint += `?from=${timeFilter.replace(':', '')}`;
 
 					const data = await this.makeApiRequest(endpoint);
 					const services = data.services || [];
@@ -1019,7 +932,6 @@ RETURNS: Connection viability with arrival/departure times, transfer time, platf
 					}
 					const stationCode = stationLookup[0].code;
 					const stationName = stationLookup[0].name;
-					const stationVerified = stationLookup[0].verified;
 
 					const apiDate = this.formatDateForApi(date);
 					const [year, month, day] = apiDate.split('/');
@@ -1048,19 +960,14 @@ RETURNS: Connection viability with arrival/departure times, transfer time, platf
 						return { content: [{ type: "text", text: `Service ${departing_uid} does not call at ${stationName}` }] };
 					}
 
-					// Get times - handle origin/destination edge cases
-					// For arriving service: use arrival time if available, otherwise departure time (if it's the origin)
-					// For departing service: use departure time if available, otherwise arrival time (if it's the destination)
-					const scheduledArr = arrivalStop.gbttBookedArrival || arrivalStop.gbttBookedDeparture;
-					const scheduledDep = departureStop.gbttBookedDeparture || departureStop.gbttBookedArrival;
-					const realtimeArr = arrivalStop.realtimeArrival || arrivalStop.realtimeDeparture || scheduledArr;
-					const realtimeDep = departureStop.realtimeDeparture || departureStop.realtimeArrival || scheduledDep;
+					// Get times
+					const scheduledArr = arrivalStop.gbttBookedArrival;
+					const scheduledDep = departureStop.gbttBookedDeparture;
+					const realtimeArr = arrivalStop.realtimeArrival || scheduledArr;
+					const realtimeDep = departureStop.realtimeDeparture || scheduledDep;
 
 					if (!scheduledArr || !scheduledDep) {
-						const missing: string[] = [];
-						if (!scheduledArr) missing.push(`arriving service ${arriving_uid} has no arrival or departure time at ${stationName}`);
-						if (!scheduledDep) missing.push(`departing service ${departing_uid} has no departure or arrival time at ${stationName}`);
-						return { content: [{ type: "text", text: `Unable to determine connection times: ${missing.join('; ')}` }] };
+						return { content: [{ type: "text", text: 'Unable to determine arrival or departure times' }] };
 					}
 
 					// Calculate connection time
@@ -1101,16 +1008,7 @@ RETURNS: Connection viability with arrival/departure times, transfer time, platf
 					const depDelay = this.calculateDelay(scheduledDep, realtimeDep);
 
 					// Build output
-					const result: string[] = [];
-
-					// Add warning if station code is unverified
-					if (!stationVerified) {
-						result.push(`WARNING: Station code "${stationCode}" not found in database.`);
-						result.push(`This may be a valid CRS code, but verify with lookup_station if results are unexpected.`);
-						result.push('');
-					}
-
-					result.push(
+					const result: string[] = [
 						`CONNECTION CHECK at ${stationName}`,
 						`Date: ${apiDate}`,
 						'',
@@ -1194,8 +1092,7 @@ RETURNS: Route health summary with % on-time, delay stats, cancellations, operat
 					const toName = toLookup[0].name;
 
 					const apiDate = this.formatDateForApi(date);
-					// Must use /to/ format before date for destination filtering
-					const endpoint = `/json/search/${fromCode}/to/${toCode}/${apiDate}`;
+					const endpoint = `/json/search/${fromCode}/${apiDate}/${toCode}`;
 
 					const data = await this.makeApiRequest(endpoint);
 					const services = data.services || [];
@@ -1346,8 +1243,7 @@ COMMON CODES:
 					const lines = [`STATION LOOKUP: "${query}"`, ''];
 
 					for (const r of results.slice(0, 10)) {
-						const verifiedMarker = r.verified ? '' : ' (unverified - may not exist)';
-						lines.push(`${r.code} - ${r.name}${verifiedMarker}`);
+						lines.push(`${r.code} - ${r.name}`);
 					}
 
 					if (results.length > 10) {
@@ -1356,13 +1252,6 @@ COMMON CODES:
 
 					lines.push('');
 					lines.push('Use the 3-letter code with other tools (e.g., get_station_board)');
-
-					// If any results are unverified, add a note
-					if (results.some(r => !r.verified)) {
-						lines.push('');
-						lines.push('Note: Unverified codes were not found in our database.');
-						lines.push('They may still be valid CRS codes - check API results to confirm.');
-					}
 
 					return { content: [{ type: "text", text: lines.join('\n') }] };
 
