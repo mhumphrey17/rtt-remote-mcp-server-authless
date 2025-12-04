@@ -1130,7 +1130,7 @@ RETURNS: Connection viability with arrival/departure times, transfer time, platf
 						'',
 						`CONNECTION TIME: ${connectionMins} minutes`,
 						platformChange ? `PLATFORM CHANGE: Yes (${arrPlatform} -> ${depPlatform})` : 'PLATFORM CHANGE: No / Unknown'
-					];
+					);
 
 					if (arrDelay > 0 && connectionMins < 10) {
 						result.push('');
