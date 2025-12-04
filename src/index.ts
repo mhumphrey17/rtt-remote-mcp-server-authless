@@ -500,7 +500,8 @@ RETURNS: Formatted board with times, destinations/origins, platforms, status, de
 					} else {
 						timeFilter = `${String(ukTime.getHours()).padStart(2, '0')}${String(ukTime.getMinutes()).padStart(2, '0')}`;
 					}
-					endpoint += `?from=${timeFilter}`;
+					// Time must be in URL path, not query parameter
+					endpoint += `/${timeFilter}`;
 
 					const data = await this.makeApiRequest(endpoint);
 					const services = data.services || [];
@@ -882,7 +883,8 @@ RETURNS: Matching journeys with departure/arrival times, duration, delays, platf
 					} else {
 						timeFilter = `${String(ukTime.getHours()).padStart(2, '0')}${String(ukTime.getMinutes()).padStart(2, '0')}`;
 					}
-					endpoint += `?from=${timeFilter}`;
+					// Time must be in URL path, not query parameter
+					endpoint += `/${timeFilter}`;
 
 					const data = await this.makeApiRequest(endpoint);
 					const services = data.services || [];
